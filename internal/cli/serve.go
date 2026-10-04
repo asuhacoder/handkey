@@ -17,6 +17,10 @@ import (
 	"github.com/asuhacoder/handkey/internal/onepassword"
 )
 
+func developmentHostCheck(next http.Handler, address string) http.Handler {
+	return next
+}
+
 func Serve(ctx context.Context, args []string, out, errout io.Writer) error {
 	f := flag.NewFlagSet("serve", flag.ContinueOnError)
 	f.SetOutput(errout)
