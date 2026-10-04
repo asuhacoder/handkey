@@ -7,12 +7,35 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
-func serveOnSocket(t *testing.T, extra ...string) *http.Client {
+type lockedOutput struct {
+	mu   sync.Mutex
+	text strings.Builder
+}
+
+func (o *lockedOutput) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.text.Write(p)
+}
+
+func (o *lockedOutput) String() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.text.String()
+}
+
+var developmentEndpoint = regexp.MustCompile(`http://127\.0\.0\.1:\d+`)
+
+const socketBase = "http://handkey.local"
+
+func serveOnSocket(t *testing.T, extra ...string) (*http.Client, string) {
 	t.Helper()
 	dir, e := os.MkdirTemp("", "hk")
 	if e != nil {
@@ -29,7 +52,8 @@ func serveOnSocket(t *testing.T, extra ...string) *http.Client {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	args := append([]string{"--state-dir", state, "--op", op, "--socket", socket, "--dev", "--bootstrap"}, extra...)
-	go func() { done <- Serve(ctx, args, io.Discard, io.Discard) }()
+	out := &lockedOutput{}
+	go func() { done <- Serve(ctx, args, out, io.Discard) }()
 	t.Cleanup(func() {
 		cancel()
 		<-done
@@ -52,15 +76,29 @@ func serveOnSocket(t *testing.T, extra ...string) *http.Client {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	tcp := ""
+	for strings.Contains(strings.Join(extra, " "), "--listen") && tcp == "" {
+		if time.Now().After(deadline) {
+			t.Fatal("serve never printed the TCP endpoint")
+		}
+		time.Sleep(10 * time.Millisecond)
+		tcp = developmentEndpoint.FindString(out.String())
+	}
 	return &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
-	}}}
+	}}}, tcp
 }
 
-func socketBootstrap(t *testing.T, c *http.Client) int {
+func status(t *testing.T, c *http.Client, method, url, body string) int {
 	t.Helper()
-	body := `{"name":"phone","key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","service_account_token":"fixture"}`
-	res, e := c.Post("http://handkey.local/v1/bootstrap", "application/json", strings.NewReader(body))
+	req, e := http.NewRequest(method, url, strings.NewReader(body))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	res, e := c.Do(req)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -68,14 +106,68 @@ func socketBootstrap(t *testing.T, c *http.Client) int {
 	return res.StatusCode
 }
 
+const bootstrapBody = `{"name":"phone","key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","service_account_token":"fixture"}`
+const submitBody = `{"method":"reveal","refs":[{"vault":"aaaaaaaaaaaaaaaaaaaaaaaaaa","item":"bbbbbbbbbbbbbbbbbbbbbbbbbb","field":"password"}],"reason":"r","agent":"a"}`
+
 func TestServeSocketOnlyCarriesApprovalRoutes(t *testing.T) {
-	if got := socketBootstrap(t, serveOnSocket(t)); got != 201 {
+	c, _ := serveOnSocket(t)
+	if got := status(t, c, "POST", socketBase+"/v1/bootstrap", bootstrapBody); got != 201 {
 		t.Fatalf("socket-only bootstrap: got %d, want 201", got)
 	}
 }
 
 func TestServeSocketIsAgentOnlyBesideListen(t *testing.T) {
-	if got := socketBootstrap(t, serveOnSocket(t, "--listen", "127.0.0.1:0")); got != 404 {
+	c, _ := serveOnSocket(t, "--listen", "127.0.0.1:0")
+	if got := status(t, c, "POST", socketBase+"/v1/bootstrap", bootstrapBody); got != 404 {
 		t.Fatalf("bootstrap on the socket beside --listen: got %d, want 404", got)
+	}
+}
+
+func TestServeListenCarriesApprovalRoutesOnly(t *testing.T) {
+	_, tcp := serveOnSocket(t, "--listen", "127.0.0.1:0")
+	for _, v := range []struct {
+		name, method, path, body string
+		want                     int
+	}{
+		{"submit", "POST", "/v1/requests", submitBody, 405},
+		{"items", "GET", "/v1/items", "", 404},
+		{"bootstrap", "POST", "/v1/bootstrap", bootstrapBody, 201},
+	} {
+		if got := status(t, http.DefaultClient, v.method, tcp+v.path, v.body); got != v.want {
+			t.Errorf("%s on --listen: got %d, want %d", v.name, got, v.want)
+		}
+	}
+}
+
+func TestServeRemoteAgentsAddsAgentRoutesToListen(t *testing.T) {
+	_, tcp := serveOnSocket(t, "--listen", "127.0.0.1:0", "--remote-agents")
+	for _, v := range []struct {
+		name, method, path, body string
+		want                     int
+	}{
+		{"bootstrap", "POST", "/v1/bootstrap", bootstrapBody, 201},
+		{"submit", "POST", "/v1/requests", submitBody, 202},
+		{"items", "GET", "/v1/items", "", 200},
+	} {
+		if got := status(t, http.DefaultClient, v.method, tcp+v.path, v.body); got != v.want {
+			t.Errorf("%s on --listen with --remote-agents: got %d, want %d", v.name, got, v.want)
+		}
+	}
+}
+
+func TestServeSocketOnlyHonoursOrigins(t *testing.T) {
+	c, _ := serveOnSocket(t, "--origins", "https://approve.example.com")
+	req, e := http.NewRequest("GET", socketBase+"/healthz", nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	req.Header.Set("Origin", "https://approve.example.com")
+	res, e := c.Do(req)
+	if e != nil {
+		t.Fatal(e)
+	}
+	res.Body.Close()
+	if res.StatusCode != 200 || res.Header.Get("Access-Control-Allow-Origin") != "https://approve.example.com" {
+		t.Fatalf("allowed origin on the socket: got %d with Access-Control-Allow-Origin %q, want 200 with the origin", res.StatusCode, res.Header.Get("Access-Control-Allow-Origin"))
 	}
 }
