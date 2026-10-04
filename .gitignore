@@ -1,0 +1,7 @@
+/bin/
+/dist/
+/.handkey/
+*.receipt.json
+*.pem
+*.key
+.DS_Store
