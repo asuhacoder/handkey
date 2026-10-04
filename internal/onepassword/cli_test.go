@@ -69,6 +69,9 @@ func TestCreateUsesStdinAndRequestTag(t *testing.T) {
 	if !strings.Contains(string(args), "--generate-password=letters,digits,32") {
 		t.Fatal("generation recipe lost")
 	}
+	if !strings.Contains(string(args), "\n--vault\naaaaaaaaaaaaaaaaaaaaaaaaaa\n") {
+		t.Fatalf("create argv missing --vault followed by literal vault ID: %q", strings.Split(strings.TrimSpace(string(args)), "\n"))
+	}
 }
 func TestProcessErrorsAreSanitized(t *testing.T) {
 	c, _ := fakeOP(t, true)
