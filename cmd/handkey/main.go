@@ -5,11 +5,22 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime/debug"
 
 	"github.com/asuhacoder/handkey/internal/cli"
 )
 
 var version = "dev"
+
+func buildVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return version
+}
 
 func main() { os.Exit(run()) }
 func run() int {
@@ -17,7 +28,7 @@ func run() int {
 	defer stop()
 	args := os.Args[1:]
 	if len(args) > 0 && args[0] == "version" {
-		fmt.Fprintln(os.Stdout, "handkey", version)
+		fmt.Fprintln(os.Stdout, "handkey", buildVersion())
 		return 0
 	}
 	if len(args) > 0 && args[0] == "serve" {

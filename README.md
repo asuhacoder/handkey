@@ -6,24 +6,35 @@ An agent requests specific fields and a delivery method. A registered client app
 
 **Status: experimental initial implementation.** The broker and CLI are tested with an isolated 1Password process fixture; live service-account access, GUI typing, and deployment on a dedicated account still need integration testing. This is a scoped CLI shim, not a complete drop-in implementation of every `op` command or output format.
 
-## Build
+## Install or update
 
-Requires Go 1.25 or newer. Runtime dependencies: the real [1Password CLI](https://developer.1password.com/docs/cli/), and macOS Accessibility permission for `type`. No Go module dependencies.
+Install [Go 1.25 or newer](https://go.dev/doc/install), then run this from any directory:
 
 ```sh
-go build -trimpath -o bin/handkey ./cmd/handkey
-go test -race ./...
-go vet ./...
-bin/handkey --help
+go install github.com/asuhacoder/handkey/cmd/handkey@latest
 ```
 
-The same binary provides `handkey serve` and the agent CLI. It can also be installed as `op`; configure the broker with an absolute path to a **separate real `op` binary**, never this shim.
+The same command updates an existing installation. To install a specific release, replace `@latest` with a tag such as `@v0.1.0`. Go downloads the published module and builds the executable for your machine; cloning this repository, Homebrew and a separate package registry are not required. Go is needed for installation and updates, not to run the installed executable.
+
+Go installs commands into `GOBIN` if configured, otherwise the `bin` directory inside `GOPATH` (usually `$HOME/go/bin`). Add that directory to your shell's `PATH` once. For the default location on macOS/Linux:
+
+```sh
+export PATH="$(go env GOPATH)/bin:$PATH"
+handkey --help
+handkey version
+```
+
+Save the `export` line in your shell startup file to keep it across sessions. If `go env GOBIN` prints a custom directory, use that directory instead. On Windows, add the corresponding Go binary directory to your user `Path`; the installed command is `handkey.exe`.
+
+Runtime dependencies: the real [1Password CLI](https://developer.1password.com/docs/cli/), and macOS Accessibility permission for `type`. Installing Handkey does not start a broker or register approval devices; configure those separately below.
+
+The same binary provides `handkey serve` and the agent CLI. It can also be installed as `op`; configure the broker with an absolute path to a **separate real `op` binary**, never this shim. This server-side setting is independent of how you install or invoke `handkey`.
 
 ## Start a development broker
 
 ```sh
 mkdir -m 700 .handkey
-bin/handkey serve \
+handkey serve \
   --state-dir "$PWD/.handkey" \
   --op /absolute/path/to/real/op \
   --socket "$PWD/.handkey/agent.sock" \
@@ -40,26 +51,38 @@ For remote access, supply `--tls-cert`, `--tls-key`, and a restricted listen add
 export HANDKEY_ENDPOINT="unix://$PWD/.handkey/agent.sock"
 
 # Populate the metadata cache (requires approval).
-bin/handkey refresh --reason 'Find the account for this task'
-bin/handkey item list --query example.com
+handkey refresh --reason 'Find the account for this task'
+handkey item list --query example.com
 
 # Refresh an item's field names using canonical IDs before resolving names.
-bin/handkey refresh op://VAULT_ID/ITEM_ID/password
+handkey refresh op://VAULT_ID/ITEM_ID/password
 
 # Request raw output directly when that is the intended delivery method.
-bin/handkey read op://Main/Example/password --reason 'Log into the requested account'
+handkey read op://Main/Example/password --reason 'Log into the requested account'
 
 # Supply a credential to one command; exact values are masked in its output.
 API_TOKEN=op://Main/Example/credential \
-  bin/handkey run --reason 'Run the deployment tool' -- your-command
+  handkey run --reason 'Run the deployment tool' -- your-command
 
 # Repeated use: receiver token goes to a private file, never printed.
-bin/handkey read op://Main/Example/password \
+handkey read op://Main/Example/password \
   --ttl 5m --uses 3 --receipt ./task.receipt.json
-bin/handkey use ./task.receipt.json
+handkey use ./task.receipt.json
 ```
 
 Placeholders such as `VAULT_ID` must be replaced with actual 26-character IDs; they are not literal example credentials. Names must already be in the cache; explicit vault/item/field IDs work before a cache refresh. `--no-wait` returns a request ID and receipt **file path**, so an agent can do other work while waiting. `status`, `cancel`, and `use` take that receipt file. `--help` describes supported flags and error recovery.
+
+## Develop from source
+
+There are no Go module dependencies. From a checkout of this repository:
+
+```sh
+go install ./cmd/handkey
+go test -race ./...
+go vet ./...
+```
+
+For a repository-local build instead, run `go build -trimpath -o bin/handkey ./cmd/handkey`. This is a development option; normal users can use the `go install ...@latest` command above.
 
 ## Current support
 
