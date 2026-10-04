@@ -101,7 +101,8 @@ func Serve(ctx context.Context, args []string, out, errout io.Writer) error {
 		listenOptions.Surfaces |= broker.AgentSurface
 	}
 	if *listen == "" {
-		socketOptions = broker.HTTPOptions{Surfaces: broker.AgentSurface | broker.ApproverSurface, Bootstrap: *bootstrap}
+		socketOptions = listenOptions
+		socketOptions.Surfaces = broker.AgentSurface | broker.ApproverSurface
 	}
 	webhookCtx, stopWebhook := context.WithCancel(ctx)
 	defer stopWebhook()
@@ -146,6 +147,9 @@ func Serve(ctx context.Context, args []string, out, errout io.Writer) error {
 		if socketOptions.Bootstrap {
 			fmt.Fprintln(errout, "Warning: first-device registration is open on the Unix socket; every process that can open the socket can register")
 		}
+	}
+	if *socket == "" && !*remoteAgents {
+		fmt.Fprintln(errout, "Warning: no listener serves the agent API; add --socket, or --remote-agents for agents on another host")
 	}
 	if *listen != "" {
 		l, e := net.Listen("tcp", *listen)
