@@ -22,14 +22,15 @@ func Serve(ctx context.Context, args []string, out, errout io.Writer) error {
 	f.SetOutput(errout)
 	state := f.String("state-dir", "", "Private broker data directory (required)")
 	op := f.String("op", "", "Absolute path to a dedicated real op binary (required)")
-	listen := f.String("listen", "", "TCP address; requires TLS unless --dev with loopback")
+	listen := f.String("listen", "", "TCP address for approval clients; requires TLS unless --dev with loopback")
+	remoteAgents := f.Bool("remote-agents", false, "Also serve the unauthenticated agent API on --listen; restrict that address with network ACLs")
 	socketMode := f.String("socket-mode", "0600", "Unix socket permissions: 0600 or 0660 for the dedicated broker group")
-	socket := f.String("socket", "", "Absolute Unix socket path (0600); pre-create an appropriate shared group directory if needed")
+	socket := f.String("socket", "", "Absolute Unix socket path for the agent API (0600); pre-create an appropriate shared group directory if needed")
 	cert := f.String("tls-cert", "", "TLS certificate PEM")
 	key := f.String("tls-key", "", "TLS private key PEM")
 	origins := f.String("origins", "", "Comma-separated exact HTTPS origins of separately hosted approval clients")
 	dev := f.Bool("dev", false, "Local development: allow HTTP loopback and user-owned binaries")
-	bootstrap := f.Bool("bootstrap", false, "Enable first-device registration on the restricted listener until initialized")
+	bootstrap := f.Bool("bootstrap", false, "Enable first-device registration on --listen until initialized")
 	webhook := f.String("webhook", "", "Optional HTTPS event webhook; delivers request IDs and event kinds only")
 	metadataApproval := f.Bool("require-metadata-approval", false, "Require an approved refresh receipt for metadata access")
 	if e := f.Parse(args); e != nil {
@@ -41,8 +42,8 @@ func Serve(ctx context.Context, args []string, out, errout io.Writer) error {
 	if !filepath.IsAbs(*state) || !filepath.IsAbs(*op) {
 		return errors.New("state-dir and op must be absolute paths")
 	}
-	if *listen == "" && *socket == "" {
-		return errors.New("configure --listen or --socket")
+	if *listen == "" {
+		return errors.New("configure --listen for approval clients; --socket serves the agent API only")
 	}
 	if e := disableCoreDumps(); e != nil {
 		return e
@@ -58,7 +59,7 @@ func Serve(ctx context.Context, args []string, out, errout io.Writer) error {
 	if e != nil || !info.Mode().IsRegular() {
 		return errors.New("real op binary is unavailable")
 	}
-	if *listen != "" && (*cert == "" || *key == "") {
+	if *cert == "" || *key == "" {
 		host, _, e := net.SplitHostPort(*listen)
 		ip := net.ParseIP(host)
 		if !*dev || e != nil || ip == nil || !ip.IsLoopback() {
@@ -81,7 +82,12 @@ func Serve(ctx context.Context, args []string, out, errout io.Writer) error {
 	}
 	defer b.Close()
 	b.RequireMetadataApproval = *metadataApproval
-	handler := b.Handler(broker.HTTPOptions{Bootstrap: *bootstrap, AllowedOrigins: allowed})
+	approverSurfaces := broker.ApproverSurface
+	if *remoteAgents {
+		approverSurfaces |= broker.AgentSurface
+	}
+	agentHandler := b.Handler(broker.HTTPOptions{Surfaces: broker.AgentSurface})
+	approverHandler := b.Handler(broker.HTTPOptions{Surfaces: approverSurfaces, Bootstrap: *bootstrap, AllowedOrigins: allowed})
 	webhookCtx, stopWebhook := context.WithCancel(ctx)
 	defer stopWebhook()
 	failures := make(chan error, 3)
@@ -118,25 +124,27 @@ func Serve(ctx context.Context, args []string, out, errout io.Writer) error {
 			l.Close()
 			return e
 		}
-		s := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
+		s := &http.Server{Handler: agentHandler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
 		servers = append(servers, s)
 		go func() { failures <- s.Serve(l) }()
-		fmt.Fprintln(out, "Broker endpoint: unix://"+*socket)
+		fmt.Fprintln(out, "Agent endpoint: unix://"+*socket)
 	}
-	if *listen != "" {
-		l, e := net.Listen("tcp", *listen)
-		if e != nil {
-			return errors.New("cannot bind TCP listener")
-		}
-		s := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
-		servers = append(servers, s)
-		if *cert != "" && *key != "" {
-			go func() { failures <- s.ServeTLS(l, *cert, *key) }()
-			fmt.Fprintln(out, "Broker endpoint: https://"+l.Addr().String())
-		} else {
-			go func() { failures <- s.Serve(l) }()
-			fmt.Fprintln(out, "Development endpoint: http://"+l.Addr().String())
-		}
+	l, e := net.Listen("tcp", *listen)
+	if e != nil {
+		return errors.New("cannot bind TCP listener")
+	}
+	s := &http.Server{Handler: approverHandler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
+	servers = append(servers, s)
+	label := "Approval endpoint: "
+	if *remoteAgents {
+		label = "Approval and agent endpoint: "
+	}
+	if *cert != "" && *key != "" {
+		go func() { failures <- s.ServeTLS(l, *cert, *key) }()
+		fmt.Fprintln(out, label+"https://"+l.Addr().String())
+	} else {
+		go func() { failures <- s.Serve(l) }()
+		fmt.Fprintln(out, label+"http://"+l.Addr().String()+" (development)")
 	}
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()

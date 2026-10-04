@@ -10,14 +10,14 @@ Build the appropriate Linux binary first and install the genuine `op` from its o
 sudo sh scripts/install-linux.sh /absolute/path/handkey /absolute/path/real/op AGENT_USER
 ```
 
-The installer creates `/opt/handkey`, `/var/lib/handkey`, `/etc/handkey`, the `handkey` system user/group, and a systemd unit. It adds `AGENT_USER` to the broker socket group; start a new login session before accessing the socket. Inspect `/etc/handkey/server.env`, configure TLS for remote clients, then explicitly start the service:
+The installer creates `/opt/handkey`, `/var/lib/handkey`, `/etc/handkey`, the `handkey` system user/group, and a systemd unit. It adds `AGENT_USER` to the broker socket group; start a new login session before accessing the socket. Set `HANDKEY_LISTEN` and the TLS paths in `/etc/handkey/server.env`, then explicitly start the service. The broker does not start without a listen address, because approval clients have no other way in:
 
 ```sh
 sudo systemctl enable --now handkey.service
 export HANDKEY_ENDPOINT=unix:///run/handkey/agent.sock
 ```
 
-The sample environment enables first-device bootstrap. Disable `HANDKEY_BOOTSTRAP` after successful registration. Once initialized, the API refuses another bootstrap even if the flag remains set. The TLS private key must be readable by the broker account but not by the agent. The optional remote listener should bind to a restricted private-network address; do not bind publicly without a separate access-control boundary. Configure exact external client origins with `HANDKEY_ORIGINS`.
+The socket serves the agent API only. The listen address serves the approval API only, including first-device bootstrap, so a process with socket access cannot register itself as the first device. The sample environment enables first-device bootstrap. Disable `HANDKEY_BOOTSTRAP` after successful registration. Once initialized, the API refuses another bootstrap even if the flag remains set. The TLS private key must be readable by the broker account but not by the agent. The listener should bind to a restricted private-network address; do not bind publicly without a separate access-control boundary. Add `--remote-agents` to the unit only when agents run on another host. It serves the unauthenticated agent API on the listen address, so every peer that can reach that address can submit requests. Configure exact external client origins with `HANDKEY_ORIGINS`.
 
 The installer is supplied for review and has not been exercised on a production host. It never migrates vault items, requests credentials, or changes 1Password settings. Upgrades replace executables only and do not initialize or overwrite state. Stop the service before replacing binaries.
 

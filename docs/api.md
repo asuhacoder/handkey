@@ -2,7 +2,7 @@
 
 This repository ships the broker and agent CLI only. Smartphones, browser apps, dsh and Even clients belong in separate repositories. They can all use this API concurrently. No key is sent through an agent tool call or an LLM conversation.
 
-All examples below are schemas with placeholders, not runnable credentials. Transport is HTTPS (or a restricted Unix socket); JSON requests use exactly `Content-Type: application/json`. Request bodies are limited to 1 MiB. Unknown JSON fields are rejected. Responses include `Cache-Control: no-store`. Tokens must be in `Authorization: Bearer TOKEN`, never in query parameters. There are no cookies.
+All examples below are schemas with placeholders, not runnable credentials. The broker serves two route groups. The approval group (registration, lifecycle, inspect and decide) is on `--listen`. The agent group (submit, receive, proxy, metadata) is on the Unix socket, and on `--listen` only when the broker runs with `--remote-agents`. A route outside a listener's group returns 404 or 405. Transport is HTTPS (or a restricted Unix socket); JSON requests use exactly `Content-Type: application/json`. Request bodies are limited to 1 MiB. Unknown JSON fields are rejected. Responses include `Cache-Control: no-store`. Tokens must be in `Authorization: Bearer TOKEN`, never in query parameters. There are no cookies.
 
 ## Registration and lifecycle
 
@@ -30,7 +30,7 @@ Clear approval key input fields after sending. Never retain keys in telemetry, c
 | --- | --- | --- |
 | `GET /healthz` | None | Liveness and initialization status; no credential data |
 | `GET /v1/requests` | View token | Currently pending, unexpired requests |
-| `GET /v1/requests/ID` | View token **or** receiver token | Sanitized immutable request and separate approval/execution states |
+| `GET /v1/requests/ID` | View token on the approval listener, receiver token on the agent listener | Sanitized immutable request and separate approval/execution states |
 | `POST /v1/requests/ID/approve` | View token plus JSON `{"key":"DEVICE_KEY"}` | Commit approval, run the 1Password operation, return `{"status":"processed"}` |
 | `POST /v1/requests/ID/deny` | View token | Deny without unlocking |
 | `GET /v1/events` | View token | SSE event hints; subscribe from every client |
