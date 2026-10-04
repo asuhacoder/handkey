@@ -18,7 +18,17 @@ import (
 )
 
 func developmentHostCheck(next http.Handler, address string) http.Handler {
-	return next
+	_, port, _ := net.SplitHostPort(address)
+	localhost := net.JoinHostPort("localhost", port)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != address && r.Host != localhost {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusMisdirectedRequest)
+			_, _ = io.WriteString(w, "{\"error\":\"unexpected Host header\"}\n")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func Serve(ctx context.Context, args []string, out, errout io.Writer) error {
@@ -147,6 +157,7 @@ func Serve(ctx context.Context, args []string, out, errout io.Writer) error {
 		go func() { failures <- s.ServeTLS(l, *cert, *key) }()
 		fmt.Fprintln(out, label+"https://"+l.Addr().String())
 	} else {
+		s.Handler = developmentHostCheck(approverHandler, l.Addr().String())
 		go func() { failures <- s.Serve(l) }()
 		fmt.Fprintln(out, label+"http://"+l.Addr().String()+" (development)")
 	}
