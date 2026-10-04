@@ -32,8 +32,6 @@ HANDKEY_LISTEN=
 HANDKEY_TLS_CERT=
 HANDKEY_TLS_KEY=
 HANDKEY_ORIGINS=
-# Set to --bootstrap only together with HANDKEY_LISTEN. Without a listen
-# address, registration is served on the agent socket.
 HANDKEY_BOOTSTRAP=
 ENV
   chown root:handkey /etc/handkey/server.env

@@ -12,7 +12,6 @@ import (
 	"github.com/asuhacoder/handkey/internal/cryptobox"
 )
 
-// Surface is the set of route groups one listener serves.
 type Surface uint8
 
 const (

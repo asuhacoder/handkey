@@ -143,6 +143,9 @@ func Serve(ctx context.Context, args []string, out, errout io.Writer) error {
 		servers = append(servers, s)
 		go func() { failures <- s.Serve(l) }()
 		fmt.Fprintln(out, endpointLabel(socketOptions.Surfaces)+"unix://"+*socket)
+		if socketOptions.Bootstrap {
+			fmt.Fprintln(errout, "Warning: first-device registration is open on the Unix socket; every process that can open the socket can register")
+		}
 	}
 	if *listen != "" {
 		l, e := net.Listen("tcp", *listen)
