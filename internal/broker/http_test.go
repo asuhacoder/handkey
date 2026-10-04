@@ -129,6 +129,32 @@ func TestProxyDestinationAndLifetime(t *testing.T) {
 		t.Fatal("closed execution alive")
 	}
 }
+func TestProxyEscapedPath(t *testing.T) {
+	b, _, c, key, _ := setup(t)
+	receivedPath := make(chan string, 1)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath <- r.URL.EscapedPath()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	old := proxyClient
+	proxyClient = upstream.Client()
+	defer func() { proxyClient = old }()
+	receipt := submit(t, b, Spec{Method: "proxy", Refs: []Ref{testRef}, Origin: upstream.URL, Header: "Authorization", Prefix: "Bearer ", Command: []string{"curl"}, Directory: "/"})
+	approve(t, b, receipt, c, key)
+	result, e := b.Consume(receipt.ID, receipt.Token)
+	if e != nil {
+		t.Fatal(e)
+	}
+	h := b.Handler(HTTPOptions{})
+	w := httpCall(t, h, "GET", "/v1/requests/"+receipt.ID+"/proxy/api/v4/projects/group%2Fproject", result.ExecutionToken, nil, "")
+	if w.Code != http.StatusNoContent {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if got := <-receivedPath; got != "/api/v4/projects/group%2Fproject" {
+		t.Fatalf("upstream escaped path = %q, want %q", got, "/api/v4/projects/group%2Fproject")
+	}
+}
 func TestSSEFanout(t *testing.T) {
 	b, _, c, _, _ := setup(t)
 	server := httptest.NewServer(b.Handler(HTTPOptions{}))
