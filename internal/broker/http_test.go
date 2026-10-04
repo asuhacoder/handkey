@@ -119,6 +119,9 @@ func TestProxyDestinationAndLifetime(t *testing.T) {
 	if w.Code != 302 || receivedHost != strings.TrimPrefix(upstream.URL, "https://") || receivedAuth != "Bearer "+sentinel || receivedCookie != "" {
 		t.Fatal(w.Code, receivedHost, receivedCookie)
 	}
+	if w = httpCall(t, h, "GET", "/v1/requests/"+receipt.ID+"/proxy/..%2F..", result.ExecutionToken, nil, ""); w.Code != 302 || receivedHost != strings.TrimPrefix(upstream.URL, "https://") {
+		t.Fatal("escaped traversal changed upstream destination", w.Code, receivedHost)
+	}
 	if w = httpCall(t, h, "POST", "/v1/requests/"+receipt.ID+"/heartbeat", receipt.Token, nil, ""); w.Code != 410 {
 		t.Fatal("receipt cannot act as execution token")
 	}

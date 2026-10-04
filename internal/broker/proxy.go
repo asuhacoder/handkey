@@ -81,8 +81,12 @@ func (a *api) proxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Construct the URL from the fixed origin; never resolve a caller URL against it.
-	origin.Path = "/" + r.PathValue("path")
-	origin.RawPath = ""
+	origin.RawPath = "/" + strings.TrimPrefix(r.URL.EscapedPath(), "/v1/requests/"+r.PathValue("id")+"/proxy/")
+	origin.Path, e = url.PathUnescape(origin.RawPath)
+	if e != nil {
+		reply(w, http.StatusBadRequest, map[string]string{"error": "invalid proxy path"})
+		return
+	}
 	origin.RawQuery = r.URL.RawQuery
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
