@@ -12,7 +12,16 @@ import (
 	"github.com/asuhacoder/handkey/internal/cryptobox"
 )
 
+// Surface is the set of route groups one listener serves.
+type Surface uint8
+
+const (
+	AgentSurface Surface = 1 << iota
+	ApproverSurface
+)
+
 type HTTPOptions struct {
+	Surfaces       Surface
 	Bootstrap      bool
 	AllowedOrigins []string
 }
