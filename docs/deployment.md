@@ -19,6 +19,8 @@ export HANDKEY_ENDPOINT=unix:///run/handkey/agent.sock
 
 When `HANDKEY_LISTEN` is set, the socket serves the agent API only. The listen address serves the approval API only, including first-device bootstrap, so a process with socket access cannot register itself as the first device. When `HANDKEY_LISTEN` is empty, the socket serves both APIs. The sample environment therefore leaves first-device bootstrap off. Do not enable bootstrap before you set `HANDKEY_LISTEN`, because `AGENT_USER` can open the socket. Disable `HANDKEY_BOOTSTRAP` after successful registration. Once initialized, the API refuses another bootstrap even if the flag remains set. The TLS private key must be readable by the broker account but not by the agent. The listener should bind to a restricted private-network address; do not bind publicly without a separate access-control boundary. Add `--remote-agents` to the unit only when agents run on another host. It serves the unauthenticated agent API on the listen address, so every peer that can reach that address can submit requests. Configure exact external client origins with `HANDKEY_ORIGINS`.
 
+When approving from the dsh Web UI, `--origins` (`HANDKEY_ORIGINS`) must contain the HTTPS origin of dsh's public URL. Use `scheme://host[:port]` with no path.
+
 The installer is supplied for review and has not been exercised on a production host. It never migrates vault items, requests credentials, or changes 1Password settings. Upgrades replace executables only and do not initialize or overwrite state. Stop the service before replacing binaries.
 
 ## macOS

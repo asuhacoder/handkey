@@ -10,6 +10,7 @@
 
 ### Added
 
+- Requests include a submission-time `display` snapshot of cached vault, item, and field names and origins for approval clients.
 - One device (key registration) holds up to 16 sessions. Each client installation has its own named session, view token, and 90-day expiry. Clients that share a 1Password-synced key no longer invalidate each other's view tokens.
 - `POST /v1/devices/{id}/sessions` creates a session. `GET /v1/devices/{id}/sessions` lists the active sessions of the caller's device. `POST /v1/sessions/{sid}/revoke` ends one session.
 - `POST /v1/bootstrap` accepts an optional `session_name`.
