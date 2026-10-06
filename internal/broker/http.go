@@ -39,7 +39,9 @@ func (b *Broker) Handler(options HTTPOptions) http.Handler {
 		mux.HandleFunc("POST /v1/bootstrap", a.bootstrap)
 		mux.HandleFunc("POST /v1/devices", a.addDevice)
 		mux.HandleFunc("POST /v1/devices/{id}/revoke", a.revoke)
-		mux.HandleFunc("POST /v1/devices/{id}/renew", a.renew)
+		mux.HandleFunc("POST /v1/devices/{id}/sessions", a.createSession)
+		mux.HandleFunc("GET /v1/devices/{id}/sessions", a.sessions)
+		mux.HandleFunc("POST /v1/sessions/{sid}/revoke", a.revokeSession)
 		mux.HandleFunc("POST /v1/token/rotate", a.rotate)
 		mux.HandleFunc("GET /v1/requests", a.requests)
 		mux.HandleFunc("POST /v1/requests/{id}/approve", a.approve)
@@ -120,7 +122,7 @@ func failure(w http.ResponseWriter, e error) {
 		status = 401
 	case errors.Is(e, ErrMissing):
 		status = 404
-	case errors.Is(e, ErrConflict):
+	case errors.Is(e, ErrConflict), errors.Is(e, ErrSessionLimit):
 		status = 409
 	case errors.Is(e, ErrExpired):
 		status = 410
@@ -129,13 +131,15 @@ func failure(w http.ResponseWriter, e error) {
 	}
 	reply(w, status, map[string]string{"error": e.Error()})
 }
-func (a *api) device(w http.ResponseWriter, r *http.Request) (string, bool) {
-	id, e := a.b.View(bearer(r))
+
+// viewer authenticates the view token and returns its device and session IDs.
+func (a *api) viewer(w http.ResponseWriter, r *http.Request) (string, string, bool) {
+	device, session, e := a.b.View(bearer(r))
 	if e != nil {
 		failure(w, e)
-		return "", false
+		return "", "", false
 	}
-	return id, true
+	return device, session, true
 }
 
 type keyBody struct {
@@ -161,9 +165,10 @@ func (a *api) bootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Name  string `json:"name"`
-		Key   string `json:"key"`
-		Token string `json:"service_account_token"`
+		Name        string `json:"name"`
+		SessionName string `json:"session_name"`
+		Key         string `json:"key"`
+		Token       string `json:"service_account_token"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -177,7 +182,7 @@ func (a *api) bootstrap(w http.ResponseWriter, r *http.Request) {
 	token := []byte(in.Token)
 	in.Token = ""
 	defer cryptobox.Wipe(token)
-	c, e := a.b.Bootstrap(in.Name, key, token)
+	c, e := a.b.Bootstrap(in.Name, in.SessionName, key, token)
 	if e != nil {
 		failure(w, e)
 		return
@@ -185,7 +190,7 @@ func (a *api) bootstrap(w http.ResponseWriter, r *http.Request) {
 	reply(w, 201, c)
 }
 func (a *api) addDevice(w http.ResponseWriter, r *http.Request) {
-	id, ok := a.device(w, r)
+	id, _, ok := a.viewer(w, r)
 	if !ok {
 		return
 	}
@@ -217,7 +222,7 @@ func (a *api) addDevice(w http.ResponseWriter, r *http.Request) {
 	reply(w, 201, c)
 }
 func (a *api) revoke(w http.ResponseWriter, r *http.Request) {
-	id, ok := a.device(w, r)
+	id, _, ok := a.viewer(w, r)
 	if !ok {
 		return
 	}
@@ -232,21 +237,63 @@ func (a *api) revoke(w http.ResponseWriter, r *http.Request) {
 	}
 	reply(w, 200, map[string]string{"status": "revoked"})
 }
-func (a *api) renew(w http.ResponseWriter, r *http.Request) {
-	key, ok := readKey(w, r)
-	if !ok {
+func (a *api) createSession(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Key  string `json:"key"`
+		Name string `json:"name"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	key, e := cryptobox.DecodeKey(in.Key)
+	in.Key = ""
+	if e != nil {
+		failure(w, ErrDenied)
 		return
 	}
 	defer cryptobox.Wipe(key)
-	c, e := a.b.Renew(r.PathValue("id"), key)
+	c, e := a.b.CreateSession(r.PathValue("id"), key, in.Name)
 	if e != nil {
 		failure(w, e)
 		return
 	}
-	reply(w, 200, c)
+	reply(w, 201, c)
+}
+func (a *api) sessions(w http.ResponseWriter, r *http.Request) {
+	device, session, ok := a.viewer(w, r)
+	if !ok {
+		return
+	}
+	list, e := a.b.Sessions(device, session, r.PathValue("id"))
+	if e != nil {
+		failure(w, e)
+		return
+	}
+	reply(w, 200, list)
+}
+func (a *api) revokeSession(w http.ResponseWriter, r *http.Request) {
+	device, session, ok := a.viewer(w, r)
+	if !ok {
+		return
+	}
+	// A session ends itself with its view token alone, so any body is ignored.
+	// Ending a sibling carries the device key.
+	target := r.PathValue("sid")
+	var key []byte
+	if target != session && r.ContentLength != 0 {
+		if key, ok = readKey(w, r); !ok {
+			return
+		}
+		defer cryptobox.Wipe(key)
+	}
+	if e := a.b.RevokeSession(device, session, target, key); e != nil {
+		failure(w, e)
+		return
+	}
+	reply(w, 200, map[string]string{"status": "revoked"})
 }
 func (a *api) rotate(w http.ResponseWriter, r *http.Request) {
-	id, ok := a.device(w, r)
+	id, _, ok := a.viewer(w, r)
 	if !ok {
 		return
 	}
@@ -284,8 +331,7 @@ func (a *api) submit(w http.ResponseWriter, r *http.Request) {
 	reply(w, 202, receipt)
 }
 func (a *api) requests(w http.ResponseWriter, r *http.Request) {
-	_, ok := a.device(w, r)
-	if !ok {
+	if _, _, ok := a.viewer(w, r); !ok {
 		return
 	}
 	reply(w, 200, a.b.Requests())
@@ -293,7 +339,7 @@ func (a *api) requests(w http.ResponseWriter, r *http.Request) {
 func (a *api) status(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if a.options.Surfaces&ApproverSurface != 0 {
-		_, e := a.b.View(bearer(r))
+		_, _, e := a.b.View(bearer(r))
 		if e == nil {
 			a.b.mu.Lock()
 			defer a.b.mu.Unlock()
@@ -318,7 +364,7 @@ func (a *api) status(w http.ResponseWriter, r *http.Request) {
 	reply(w, 200, req)
 }
 func (a *api) approve(w http.ResponseWriter, r *http.Request) {
-	id, ok := a.device(w, r)
+	device, session, ok := a.viewer(w, r)
 	if !ok {
 		return
 	}
@@ -327,18 +373,18 @@ func (a *api) approve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer cryptobox.Wipe(key)
-	if e := a.b.Approve(r.Context(), r.PathValue("id"), id, key); e != nil {
+	if e := a.b.Approve(r.Context(), r.PathValue("id"), device, session, key); e != nil {
 		failure(w, e)
 		return
 	}
 	reply(w, 200, map[string]string{"status": "processed"})
 }
 func (a *api) deny(w http.ResponseWriter, r *http.Request) {
-	id, ok := a.device(w, r)
+	device, session, ok := a.viewer(w, r)
 	if !ok {
 		return
 	}
-	if e := a.b.Reject(r.PathValue("id"), id); e != nil {
+	if e := a.b.Reject(r.PathValue("id"), device, session); e != nil {
 		failure(w, e)
 		return
 	}
@@ -374,8 +420,7 @@ func (a *api) items(w http.ResponseWriter, r *http.Request) {
 	reply(w, 200, map[string]any{"items": items, "last_sync": sync, "synced": !sync.IsZero()})
 }
 func (a *api) events(w http.ResponseWriter, r *http.Request) {
-	_, ok := a.device(w, r)
-	if !ok {
+	if _, _, ok := a.viewer(w, r); !ok {
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -395,7 +440,7 @@ func (a *api) events(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case event := <-c:
-			if _, e := a.b.View(bearer(r)); e != nil {
+			if _, _, e := a.b.View(bearer(r)); e != nil {
 				return
 			}
 			_ = rc.SetWriteDeadline(time.Now().Add(10 * time.Second))
@@ -407,7 +452,7 @@ func (a *api) events(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-ticker.C:
-			if _, e := a.b.View(bearer(r)); e != nil {
+			if _, _, e := a.b.View(bearer(r)); e != nil {
 				return
 			}
 			_ = rc.SetWriteDeadline(time.Now().Add(10 * time.Second))

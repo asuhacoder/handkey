@@ -18,7 +18,7 @@ type store struct {
 }
 
 func openStore(dir string) (*store, State, error) {
-	empty := State{Version: 1, Devices: map[string]*Device{}, Requests: map[string]*Request{}, Cache: map[string]Item{}}
+	empty := State{Version: stateVersion, Devices: map[string]*Device{}, Requests: map[string]*Request{}, Cache: map[string]Item{}}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, empty, err
 	}
@@ -66,11 +66,51 @@ func openStore(dir string) (*store, State, error) {
 		s.close()
 		return nil, empty, errors.New("invalid state")
 	}
-	if empty.Version != 1 || empty.Devices == nil || empty.Requests == nil || empty.Cache == nil {
+	if (empty.Version != 1 && empty.Version != stateVersion) || empty.Devices == nil || empty.Requests == nil || empty.Cache == nil {
 		s.close()
 		return nil, empty, errors.New("unsupported state format")
 	}
+	for _, d := range empty.Devices {
+		if d.Sessions == nil {
+			d.Sessions = map[string]*Session{}
+		}
+	}
+	if empty.Version == 1 {
+		if err = migrateV1(data, &empty); err == nil {
+			err = s.save(&empty)
+		}
+		if err != nil {
+			s.close()
+			return nil, empty, errors.New("cannot migrate state")
+		}
+	}
 	return s, empty, nil
+}
+
+const stateVersion = 2
+
+// migrateV1 turns each version 1 device's single view token into its first
+// session, so that tokens issued before the upgrade keep working.
+func migrateV1(data []byte, state *State) error {
+	var old struct {
+		Devices map[string]struct {
+			ViewHash  string    `json:"view_hash"`
+			ViewUntil time.Time `json:"view_until"`
+		} `json:"devices"`
+	}
+	if err := json.Unmarshal(data, &old); err != nil {
+		return err
+	}
+	for id, d := range state.Devices {
+		v := old.Devices[id]
+		if d.Revoked || v.ViewHash == "" {
+			continue
+		}
+		sid := cryptobox.Token()
+		d.Sessions[sid] = &Session{ID: sid, Name: d.Name, ViewHash: v.ViewHash, CreatedAt: v.ViewUntil.Add(-sessionLifetime), ViewUntil: v.ViewUntil}
+	}
+	state.Version = stateVersion
+	return nil
 }
 func (s *store) close() {
 	cryptobox.Wipe(s.key)
@@ -124,6 +164,7 @@ type Audit struct {
 	Refs    []Ref     `json:"refs,omitempty"`
 	Origin  string    `json:"origin,omitempty"`
 	Device  string    `json:"device,omitempty"`
+	Session string    `json:"session,omitempty"`
 	TTL     int       `json:"ttl_seconds,omitempty"`
 	Uses    int       `json:"uses,omitempty"`
 }

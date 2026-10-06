@@ -58,32 +58,52 @@ type Spec struct {
 	Create       *Create           `json:"create,omitempty"`
 }
 type Request struct {
-	ID           string    `json:"id"`
-	Spec         Spec      `json:"spec"`
-	Approval     string    `json:"approval"`
-	Execution    string    `json:"execution"`
-	CreatedAt    time.Time `json:"created_at"`
-	Deadline     time.Time `json:"deadline"`
-	ApprovedAt   time.Time `json:"approved_at,omitempty"`
-	ApprovedBy   string    `json:"approved_by,omitempty"`
-	LeaseUntil   time.Time `json:"lease_until,omitempty"`
-	Used         int       `json:"used"`
-	ReceiptHash  string    `json:"receipt_hash,omitempty"`
-	ReceiptUntil time.Time `json:"receipt_until"`
-	Source       string    `json:"source"`
-	Error        string    `json:"error,omitempty"`
-	CreatedItem  *Item     `json:"created_item,omitempty"`
+	ID              string    `json:"id"`
+	Spec            Spec      `json:"spec"`
+	Approval        string    `json:"approval"`
+	Execution       string    `json:"execution"`
+	CreatedAt       time.Time `json:"created_at"`
+	Deadline        time.Time `json:"deadline"`
+	ApprovedAt      time.Time `json:"approved_at,omitempty"`
+	ApprovedBy      string    `json:"approved_by,omitempty"`
+	ApprovedSession string    `json:"approved_session,omitempty"`
+	LeaseUntil      time.Time `json:"lease_until,omitempty"`
+	Used            int       `json:"used"`
+	ReceiptHash     string    `json:"receipt_hash,omitempty"`
+	ReceiptUntil    time.Time `json:"receipt_until"`
+	Source          string    `json:"source"`
+	Error           string    `json:"error,omitempty"`
+	CreatedItem     *Item     `json:"created_item,omitempty"`
 }
+
+// Device is one key registration, not a physical device. Its key may be synced
+// to many machines, and every client that holds it gets its own Session.
 type Device struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	WrappedKey []byte    `json:"wrapped_key"`
-	ViewHash   string    `json:"view_hash"`
-	ViewUntil  time.Time `json:"view_until"`
-	Revoked    bool      `json:"revoked"`
+	ID         string              `json:"id"`
+	Name       string              `json:"name"`
+	WrappedKey []byte              `json:"wrapped_key"`
+	Sessions   map[string]*Session `json:"sessions"`
+	Revoked    bool                `json:"revoked"`
+}
+
+// Session is one client installation. Name is caller-supplied and untrusted.
+type Session struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	ViewHash  string    `json:"view_hash"`
+	CreatedAt time.Time `json:"created_at"`
+	ViewUntil time.Time `json:"view_until"`
+}
+type SessionInfo struct {
+	SessionID string    `json:"session_id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	ViewUntil time.Time `json:"view_until"`
+	Current   bool      `json:"current"`
 }
 type Credentials struct {
 	ID        string    `json:"id"`
+	SessionID string    `json:"session_id"`
 	ViewToken string    `json:"view_token"`
 	ViewUntil time.Time `json:"view_until"`
 }
