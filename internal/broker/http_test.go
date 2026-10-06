@@ -122,6 +122,9 @@ func TestProxyDestinationAndLifetime(t *testing.T) {
 	if w.Code != 302 || receivedHost != strings.TrimPrefix(upstream.URL, "https://") || receivedAuth != "Bearer "+sentinel || receivedCookie != "" {
 		t.Fatal(w.Code, receivedHost, receivedCookie)
 	}
+	if w = httpCall(t, h, "GET", "/v1/requests/"+receipt.ID+"/proxy/..%2F..", result.ExecutionToken, nil, ""); w.Code != 302 || receivedHost != strings.TrimPrefix(upstream.URL, "https://") {
+		t.Fatal("escaped traversal changed upstream destination", w.Code, receivedHost)
+	}
 	if w = httpCall(t, h, "POST", "/v1/requests/"+receipt.ID+"/heartbeat", receipt.Token, nil, ""); w.Code != 410 {
 		t.Fatal("receipt cannot act as execution token")
 	}
@@ -130,6 +133,32 @@ func TestProxyDestinationAndLifetime(t *testing.T) {
 	}
 	if w = httpCall(t, h, "GET", "/v1/requests/"+receipt.ID+"/proxy/", result.ExecutionToken, nil, ""); w.Code != 410 {
 		t.Fatal("closed execution alive")
+	}
+}
+func TestProxyEscapedPath(t *testing.T) {
+	b, _, c, key, _ := setup(t)
+	receivedPath := make(chan string, 1)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath <- r.URL.EscapedPath()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	old := proxyClient
+	proxyClient = upstream.Client()
+	defer func() { proxyClient = old }()
+	receipt := submit(t, b, Spec{Method: "proxy", Refs: []Ref{testRef}, Origin: upstream.URL, Header: "Authorization", Prefix: "Bearer ", Command: []string{"curl"}, Directory: "/"})
+	approve(t, b, receipt, c, key)
+	result, e := b.Consume(receipt.ID, receipt.Token)
+	if e != nil {
+		t.Fatal(e)
+	}
+	h := b.Handler(HTTPOptions{Surfaces: AgentSurface})
+	w := httpCall(t, h, "GET", "/v1/requests/"+receipt.ID+"/proxy/api/v4/projects/group%2Fproject", result.ExecutionToken, nil, "")
+	if w.Code != http.StatusNoContent {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if got := <-receivedPath; got != "/api/v4/projects/group%2Fproject" {
+		t.Fatalf("upstream escaped path = %q, want %q", got, "/api/v4/projects/group%2Fproject")
 	}
 }
 func TestSSEFanout(t *testing.T) {
