@@ -57,23 +57,42 @@ type Spec struct {
 	Target       string            `json:"target,omitempty"`
 	Create       *Create           `json:"create,omitempty"`
 }
+
+// RefDisplay is what the cache knew about one reference when the request was
+// submitted. The names are untrusted text and are never updated afterwards.
+type RefDisplay struct {
+	Vault      string   `json:"vault"`
+	Item       string   `json:"item"`
+	Field      string   `json:"field"`
+	VaultName  string   `json:"vault_name"`
+	ItemTitle  string   `json:"item_title"`
+	FieldLabel string   `json:"field_label"`
+	FieldType  string   `json:"field_type"`
+	Origins    []string `json:"origins"`
+	Known      bool     `json:"known"`
+}
+type RequestDisplay struct {
+	Refs            []RefDisplay `json:"refs"`
+	CreateVaultName string       `json:"create_vault_name,omitempty"`
+}
 type Request struct {
-	ID              string    `json:"id"`
-	Spec            Spec      `json:"spec"`
-	Approval        string    `json:"approval"`
-	Execution       string    `json:"execution"`
-	CreatedAt       time.Time `json:"created_at"`
-	Deadline        time.Time `json:"deadline"`
-	ApprovedAt      time.Time `json:"approved_at,omitempty"`
-	ApprovedBy      string    `json:"approved_by,omitempty"`
-	ApprovedSession string    `json:"approved_session,omitempty"`
-	LeaseUntil      time.Time `json:"lease_until,omitempty"`
-	Used            int       `json:"used"`
-	ReceiptHash     string    `json:"receipt_hash,omitempty"`
-	ReceiptUntil    time.Time `json:"receipt_until"`
-	Source          string    `json:"source"`
-	Error           string    `json:"error,omitempty"`
-	CreatedItem     *Item     `json:"created_item,omitempty"`
+	ID              string          `json:"id"`
+	Spec            Spec            `json:"spec"`
+	Display         *RequestDisplay `json:"display,omitempty"`
+	Approval        string          `json:"approval"`
+	Execution       string          `json:"execution"`
+	CreatedAt       time.Time       `json:"created_at"`
+	Deadline        time.Time       `json:"deadline"`
+	ApprovedAt      time.Time       `json:"approved_at,omitempty"`
+	ApprovedBy      string          `json:"approved_by,omitempty"`
+	ApprovedSession string          `json:"approved_session,omitempty"`
+	LeaseUntil      time.Time       `json:"lease_until,omitempty"`
+	Used            int             `json:"used"`
+	ReceiptHash     string          `json:"receipt_hash,omitempty"`
+	ReceiptUntil    time.Time       `json:"receipt_until"`
+	Source          string          `json:"source"`
+	Error           string          `json:"error,omitempty"`
+	CreatedItem     *Item           `json:"created_item,omitempty"`
 }
 
 // Device is one key registration, not a physical device. Its key may be synced
