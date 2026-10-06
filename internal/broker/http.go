@@ -40,6 +40,8 @@ func (b *Broker) Handler(options HTTPOptions) http.Handler {
 		mux.HandleFunc("POST /v1/devices", a.addDevice)
 		mux.HandleFunc("POST /v1/devices/{id}/revoke", a.revoke)
 		mux.HandleFunc("POST /v1/devices/{id}/sessions", a.createSession)
+		mux.HandleFunc("POST /v1/devices/{id}/sessions/list", a.sessionsByKey)
+		mux.HandleFunc("POST /v1/devices/{id}/sessions/{sid}/revoke", a.revokeSessionByKey)
 		mux.HandleFunc("GET /v1/devices/{id}/sessions", a.sessions)
 		mux.HandleFunc("POST /v1/sessions/{sid}/revoke", a.revokeSession)
 		mux.HandleFunc("POST /v1/token/rotate", a.rotate)
@@ -258,6 +260,47 @@ func (a *api) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, 201, c)
+}
+func (a *api) sessionsByKey(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Key string `json:"key"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	key, e := cryptobox.DecodeKey(in.Key)
+	in.Key = ""
+	if e != nil {
+		failure(w, ErrDenied)
+		return
+	}
+	defer cryptobox.Wipe(key)
+	list, e := a.b.SessionsByKey(r.PathValue("id"), key)
+	if e != nil {
+		failure(w, e)
+		return
+	}
+	reply(w, 200, list)
+}
+func (a *api) revokeSessionByKey(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Key string `json:"key"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	key, e := cryptobox.DecodeKey(in.Key)
+	in.Key = ""
+	if e != nil {
+		failure(w, ErrDenied)
+		return
+	}
+	defer cryptobox.Wipe(key)
+	if e := a.b.RevokeSessionByKey(r.PathValue("id"), key, r.PathValue("sid")); e != nil {
+		failure(w, e)
+		return
+	}
+	reply(w, 200, map[string]string{"status": "revoked"})
 }
 func (a *api) sessions(w http.ResponseWriter, r *http.Request) {
 	device, session, ok := a.viewer(w, r)
