@@ -6,23 +6,69 @@ All examples below are schemas with placeholders, not runnable credentials. Tran
 
 ## Registration and lifecycle
 
-1. A client generates 32 cryptographically random bytes and encodes them using **unpadded base64url**. This is a device key, not a user password. Save it using the client's chosen secure storage or 1Password autofill. A password-derived short key is not accepted.
+The broker keeps two kinds of record.
+
+- A **device** is a key registration. It holds one copy of the master key, wrapped with a device key. A device is not a physical machine. A key that a password manager syncs exists on every machine that the password manager reaches.
+- A **session** is one client installation. It has a name, a view token, and an expiry time. A device holds up to 16 active sessions.
+
+Choose between the two by where the client keeps its key.
+
+- If a client uses a key that is already registered, add a session to that device. Example: a phone page and a dsh plugin both read the same 1Password item. A separate key for each client adds no protection, because 1Password syncs every key to the same machines.
+- If a client keeps its key somewhere else, register a new device. Example: an Even app that stores its key inside the app.
+
+A view token lets a session list requests, read a request, deny a request, and subscribe to events. Approval and the management operations below also need the key of the device that the session belongs to. A view token cannot be combined with the key of another device.
+
+### Register the first device
+
+1. Generate 32 cryptographically random bytes and encode them as **unpadded base64url**. This value is the device key. It is not a user password, and the broker rejects a short key derived from a password. Store the device key in the client's secure storage or in 1Password.
 2. On an uninitialized broker started with `--bootstrap`, send:
 
    ```http
    POST /v1/bootstrap
    Content-Type: application/json
 
-   {"name":"Phone","key":"CLIENT_GENERATED_KEY","service_account_token":"TOKEN_FROM_USER"}
+   {"name":"1Password key","session_name":"Phone","key":"CLIENT_GENERATED_KEY","service_account_token":"TOKEN_FROM_USER"}
    ```
 
-3. A successful response is `201 {"id":"DEVICE_ID","view_token":"VIEW_TOKEN","view_until":"RFC3339"}`. The client retains the view token for routine inspection. The device key is not returned or stored by the broker. Initialization is accepted only once.
-4. To add another key registration, an existing client sends `POST /v1/devices` with its view token and `{"name":"Second client","key":"EXISTING_DEVICE_KEY","new_key":"NEW_CLIENT_GENERATED_KEY"}`. Return the new ID/view-token response directly to that client over the trusted registration channel. This first version supplies the authenticated rewrap operation; the separate clients own the pairing/QR coordination. The CLI does not implement pairing UX.
-5. Revoke a device using `POST /v1/devices/DEVICE_ID/revoke` with an active approving client's view token and `{"key":"APPROVING_DEVICE_KEY"}`. This invalidates the revoked view token and wrapped master key immediately.
-6. View tokens expire after 90 days. Renew with `POST /v1/devices/DEVICE_ID/renew` and `{"key":"DEVICE_KEY"}`. An unexpired view token is not required; possession of the device key authenticates renewal. The old view token is invalidated.
-7. Routine service-account rotation: `POST /v1/token/rotate`, authenticated by a view token, with `{"key":"DEVICE_KEY","service_account_token":"NEW_TOKEN"}`. This retains the master key; compromise recovery is different (see SECURITY.md).
+   `session_name` is optional. The default is `name`.
+3. The response is `201 {"id":"DEVICE_ID","session_id":"SESSION_ID","view_token":"VIEW_TOKEN","view_until":"RFC3339"}`. Keep the view token for routine inspection. The broker does not store or return the device key. The broker accepts initialization only once.
 
-Clear approval key input fields after sending. Never retain keys in telemetry, crash reports, console output, URLs or event payloads. A device here means a key registration; a key synced through a password manager may exist on several physical devices.
+### Add a session
+
+Send the device key. No view token is needed, because possession of the device key is the authentication.
+
+```http
+POST /v1/devices/DEVICE_ID/sessions
+Content-Type: application/json
+
+{"key":"DEVICE_KEY","name":"dsh plugin"}
+```
+
+The response is `201` with the same fields as the bootstrap response. The existing sessions of the device do not change, and their view tokens stay valid.
+
+- A wrong key and an unknown device ID both return 401 with the same body.
+- If the device already has 16 active sessions, the response is 409. The broker never removes a session to make room. Revoke a session first.
+- A session expires 90 days after creation. There is no renewal. When a session expires, create a new session with the device key.
+
+### List and revoke sessions
+
+| Method and route | Authentication | Behavior |
+| --- | --- | --- |
+| `GET /v1/devices/DEVICE_ID/sessions` | View token of a session on that device | Active sessions as `[{"session_id","name","created_at","view_until","current"}]`. `current` marks the caller's session. A different device ID returns 404 |
+| `POST /v1/sessions/SESSION_ID/revoke` for the caller's own session | View token, no body | Log out. Only that session ends |
+| `POST /v1/sessions/SESSION_ID/revoke` for another session on the same device | View token plus `{"key":"DEVICE_KEY"}` | End that session. Without the key the response is 401 |
+
+A session cannot revoke a session on another device. That request returns 404. Revoke the whole device instead.
+
+Session and device names are text that the registering client supplied. The broker limits each name to 128 bytes and does not otherwise check it. Treat a name as untrusted data. Never render a name as HTML.
+
+### Add or revoke a device
+
+- To register a second key, an existing session sends `POST /v1/devices` with its view token and `{"name":"Even app","key":"EXISTING_DEVICE_KEY","new_key":"NEW_CLIENT_GENERATED_KEY"}`. The response has the same fields as the bootstrap response and contains the first session of the new device. Give the response to the new client over the trusted registration channel. The clients own the pairing and QR coordination. The CLI has no pairing UX.
+- To revoke a device, send `POST /v1/devices/DEVICE_ID/revoke` with a view token and `{"key":"APPROVING_DEVICE_KEY"}`. The broker deletes the wrapped master key and every session of the revoked device. The revoked key can no longer approve or create sessions.
+- To rotate the service account token, send `POST /v1/token/rotate` with a view token and `{"key":"DEVICE_KEY","service_account_token":"NEW_TOKEN"}`. Rotation keeps the master key. Recovery from a compromise is a different procedure. See SECURITY.md.
+
+Clear the key input field after each send. Never put a key in telemetry, crash reports, console output, URLs, or event payloads. The broker never returns or logs a view token after it issues the token, and it never returns a view token hash.
 
 ## Inspect and decide
 
@@ -35,7 +81,7 @@ Clear approval key input fields after sending. Never retain keys in telemetry, c
 | `POST /v1/requests/ID/deny` | View token | Deny without unlocking |
 | `GET /v1/events` | View token | SSE event hints; subscribe from every client |
 
-`processed` means the decision was handled, not that a write succeeded. Fetch the request's `execution` field afterwards. All clients see the same pending queue; only the first valid decision is accepted. Repeated approvals return 409 and never execute again. A wrong key leaves the request pending. Device/view-token checks also happen on ongoing SSE traffic, so revocation closes access.
+`processed` means the decision was handled, not that a write succeeded. Fetch the request's `execution` field afterwards. All clients see the same pending queue; only the first valid decision is accepted. Repeated approvals return 409 and never execute again. A wrong key leaves the request pending. A decided request records the device in `approved_by` and the session in `approved_session`, for a denial as well as an approval. The audit log records the same two IDs. The broker checks the view token again before each SSE write, so a revoked or expired session loses its stream.
 
 SSE starts with `event: sync`. Fetch a complete pending list on connect/reconnect. Subsequent `event: change` data is `{"id":"REQUEST_ID","kind":"requested","at":"RFC3339"}` (kinds also include approval, execution and lifecycle changes). Queues are bounded and may drop hints; there are no replay IDs. Clients must reconcile periodically, on reconnect, and on foreground resume. Browser clients should use a fetch-based SSE reader because native `EventSource` cannot set the bearer header. CORS supports exact allowlisted origins and Authorization/Content-Type preflights, without credentials or wildcard origins.
 
@@ -95,4 +141,4 @@ Execution: `not_started → running → ready | succeeded | failed | unknown`, f
 
 New items carry the tag `handkey-request:REQUEST_ID`. On an unknown outcome, inspect 1Password for that tag before creating a replacement request. The API never retries writes. Requests remain queryable until receiver expiry; state is pruned seven days later. Audit retention is operator-managed.
 
-Errors are sanitized JSON `{"error":"message"}`: 400 invalid input, 401 invalid view/key authentication, 404 absent/not-authorized receipt, 409 decision conflict, 410 unavailable/expired values, 413/400 oversized input, 415 wrong content type, 503 broker state failure. Do not put response bodies or arbitrary provider errors into telemetry.
+Errors are sanitized JSON `{"error":"message"}`: 400 invalid input, 401 invalid view/key authentication, 404 absent/not-authorized receipt, 409 decision conflict or session limit, 410 unavailable/expired values, 413/400 oversized input, 415 wrong content type, 503 broker state failure. Do not put response bodies or arbitrary provider errors into telemetry.

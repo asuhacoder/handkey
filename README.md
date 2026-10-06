@@ -88,7 +88,7 @@ For a repository-local build instead, run `go build -trimpath -o bin/handkey ./c
 
 | Area | Implemented | Limitations |
 | --- | --- | --- |
-| Approval | Envelope encryption, device registration/revocation, independent view tokens, token rotation, first valid decision wins | Separate client supplies all key generation, storage and approval UX |
+| Approval | Envelope encryption, device (key) registration and revocation, up to 16 named sessions per device with independent view tokens, per-session revocation, token rotation, first valid decision wins | Separate client supplies all key generation, storage and approval UX. Sessions expire after 90 days and are replaced, not renewed |
 | Requests | Durable states, cancellation, 15-minute maximum pending timeout, receiver capabilities, restart recovery | Single broker process; in-memory values and proxy sessions do not survive restart |
 | Metadata | Value-free search and field metadata, optional approval requirement, origin-only cached URLs | Uncached field names require an approved refresh; full list sync is piggybacked at most every 15 minutes |
 | `reveal`, `otp` | Text fields, multiple references, RFC 6238 TOTP, field-scoped leases | No passkeys, documents, binary attachments or structured SSH-key fields |
@@ -112,7 +112,7 @@ Separate approval client ── HTTPS, view token + key ──┘
 Approved field values ── caller-side helper ── command / macOS foreground window
 ```
 
-The service token is encrypted with a random master key. Each device has a separately encrypted copy of the master key. View and receiver tokens are stored as hashes. The encrypted state file has a separate local storage key; that key alone cannot unlock the service token. No fetched field values, TOTP seeds, or active proxy tokens are written to disk. Agent-supplied pending write fields are part of encrypted request state until execution finishes.
+The service token is encrypted with a random master key. Each device, meaning each registered key, has a separately encrypted copy of the master key. Each client that uses the key has its own session and view token. View and receiver tokens are stored as hashes. The encrypted state file has a separate local storage key; that key alone cannot unlock the service token. No fetched field values, TOTP seeds, or active proxy tokens are written to disk. Agent-supplied pending write fields are part of encrypted request state until execution finishes.
 
 Protect the broker executable, dedicated `op`, state, startup configuration, and approval client code from the agent's user account. An agent with the same UID or administrator access can bypass that separation. Approval unlocks a vault-wide service token briefly; it is not a field-scoped credential issued by 1Password. Go cannot promise immediate erasure of every memory copy. See [security boundaries](SECURITY.md), [API](docs/api.md), and [roadmap](docs/roadmap.md).
 

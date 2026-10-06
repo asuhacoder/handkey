@@ -5,6 +5,7 @@ Handkey is experimental. Report a vulnerability using GitHub's private vulnerabi
 ## What is enforced
 
 - A client-generated 256-bit device key is required to unwrap the service-account token. An active view token alone can inspect or deny requests, but cannot approve or receive values.
+- A device is a key registration, and a session is one client's view token for that device. Creating a session requires the device key. A session can approve only with the key of its own device. A session can end itself with its view token, and ending another session also requires the device key.
 - Canonical vault/item/field IDs and the delivery method are frozen before approval. Leases cannot select extra fields or another proxy origin. A separate receiver capability is required to consume a result.
 - Only the first valid approval/denial/cancellation/expiry transition succeeds. A durable running state is committed before touching `op`. Writes with uncertain outcomes are never automatically retried.
 - `op` gets a minimal environment, a private temporary configuration directory and `--cache=false`. Its authentication token is not placed in the broker's process-wide environment or a user command. Untrusted output and stderr are not used as error messages.
@@ -27,4 +28,8 @@ The agent API has no login: Unix socket permissions or a private network with ex
 - Audit metadata can itself identify accounts. State, audit and receipt files require private storage and a retention policy. Audit records currently remain until an operator rotates them; completed request state is removed seven days after receiver expiry.
 - Losing state persistence makes the broker fail closed until restart. Restore the complete state directory, not individual encryption files. Backups contain encrypted credentials and must be protected.
 
-If only a device key leaks, revoke that device. If the service-account token leaks, revoke and replace it in 1Password. If the master key, device key plus encrypted data, or all approval devices are lost, revoke/reissue the 1Password token and bootstrap a fresh state directory with newly generated device keys. Routine token rotation does not replace the master key and is not the recovery procedure for master-key compromise.
+If only a view token leaks, revoke that session. If only a device key leaks, revoke that device. Revoking a device ends all of its sessions.
+
+If you lose a physical device, revoke every Handkey device whose key was synced to the 1Password app on the lost device. Revoking the sessions that ran on the lost device is not enough, because the device key lets the holder create new sessions and approve requests. Then register new keys from a device that you still control.
+
+ If the service-account token leaks, revoke and replace it in 1Password. If the master key, device key plus encrypted data, or all approval devices are lost, revoke/reissue the 1Password token and bootstrap a fresh state directory with newly generated device keys. Routine token rotation does not replace the master key and is not the recovery procedure for master-key compromise.
