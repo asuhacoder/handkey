@@ -83,6 +83,33 @@ Clear the key input field after each send. Never put a key in telemetry, crash r
 
 `processed` means the decision was handled, not that a write succeeded. Fetch the request's `execution` field afterwards. All clients see the same pending queue; only the first valid decision is accepted. Repeated approvals return 409 and never execute again. A wrong key leaves the request pending. A decided request records the device in `approved_by` and the session in `approved_session`, for a denial as well as an approval. The audit log records the same two IDs. The broker checks the view token again before each SSE write, so a revoked or expired session loses its stream.
 
+New requests include a `display` snapshot from the metadata cache at submission time:
+
+```json
+{
+  "display": {
+    "refs": [{
+      "vault": "VAULT_ID",
+      "item": "ITEM_ID",
+      "field": "password",
+      "vault_name": "Main",
+      "item_title": "Example",
+      "field_label": "password",
+      "field_type": "CONCEALED",
+      "origins": ["https://example.com"],
+      "known": true
+    }],
+    "create_vault_name": "Main"
+  }
+}
+```
+
+`display.refs` has the same order and IDs as `spec.refs`. It is `[]` when there are no references. Each `origins` array is non-null. `create_vault_name` appears only when the create vault's name is cached and non-empty. The snapshot never changes, even after a refresh, and can be stale. Requests created before this version have no `display` field. `display` is not accepted in `POST /v1/requests`.
+
+`known: true` means the cache contained the item and the requested field at submission. If only the item was cached, item metadata can be present with `known: false`. Clients must render `known: false` as "an item whose name cannot be confirmed", never as blank or as if verified.
+
+Names are untrusted strings. An agent can create items with `write`, so it chooses their titles. Clients must render names as plain text, never as HTML or markup. Item titles have a limit of 256 runes. Vault names, field labels, field types, and create vault names have a limit of 128 runes. Origins contain only an HTTP or HTTPS scheme and host, including a port when present. Duplicate origins are removed in first-seen order. Each reference has at most 8 origins. Origins longer than 256 runes are dropped, not truncated.
+
 SSE starts with `event: sync`. Fetch a complete pending list on connect/reconnect. Subsequent `event: change` data is `{"id":"REQUEST_ID","kind":"requested","at":"RFC3339"}` (kinds also include approval, execution and lifecycle changes). Queues are bounded and may drop hints; there are no replay IDs. Clients must reconcile periodically, on reconnect, and on foreground resume. Browser clients should use a fetch-based SSE reader because native `EventSource` cannot set the bearer header. CORS supports exact allowlisted origins and Authorization/Content-Type preflights, without credentials or wildcard origins.
 
 `--webhook https://receiver.example/events` provides the same non-secret event hints by POST. It is best-effort, bounded and unsigned; a receiver must treat it as a wake-up hint and fetch authenticated state. It does not deliver approval keys, values or receiver tokens. Redirects are not followed. Web Push delivery is not yet implemented.

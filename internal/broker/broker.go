@@ -406,6 +406,66 @@ func (b *Broker) normalize(r Ref) (Ref, error) {
 	}
 	return Ref{}, errors.New("reference not cached; request an approved refresh, or use canonical IDs")
 }
+
+const (
+	maxDisplayItemTitle = 256
+	maxDisplayName      = 128
+	maxDisplayOrigin    = 256
+	maxDisplayOrigins   = 8
+)
+
+func clip(s string, max int) string {
+	n := 0
+	for i := range s {
+		if n == max {
+			return s[:i]
+		}
+		n++
+	}
+	return s
+}
+func (b *Broker) display(spec Spec) *RequestDisplay {
+	d := &RequestDisplay{Refs: make([]RefDisplay, 0, len(spec.Refs))}
+	for _, ref := range spec.Refs {
+		r := RefDisplay{Vault: ref.Vault, Item: ref.Item, Field: ref.Field, Origins: []string{}}
+		if item, ok := b.st.Cache[ref.Vault+"/"+ref.Item]; ok {
+			r.VaultName = clip(item.VaultName, maxDisplayName)
+			r.ItemTitle = clip(item.Title, maxDisplayItemTitle)
+			for _, field := range item.Fields {
+				if field.ID == ref.Field {
+					r.FieldLabel = clip(field.Label, maxDisplayName)
+					r.FieldType = clip(field.Type, maxDisplayName)
+					r.Known = true
+					break
+				}
+			}
+			seen := map[string]bool{}
+			for _, raw := range item.URLs {
+				o, ok := origin(raw)
+				if !ok || utf8.RuneCountInString(o) > maxDisplayOrigin || seen[o] {
+					continue
+				}
+				seen[o] = true
+				r.Origins = append(r.Origins, o)
+				if len(r.Origins) == maxDisplayOrigins {
+					break
+				}
+			}
+		}
+		d.Refs = append(d.Refs, r)
+	}
+	if spec.Create != nil {
+		var latest Item
+		bestKey := ""
+		for key, item := range b.st.Cache {
+			if item.Vault == spec.Create.Vault && item.VaultName != "" && (bestKey == "" || item.SyncedAt.After(latest.SyncedAt) || item.SyncedAt.Equal(latest.SyncedAt) && key < bestKey) {
+				latest, bestKey = item, key
+			}
+		}
+		d.CreateVaultName = clip(latest.VaultName, maxDisplayName)
+	}
+	return d
+}
 func cloneRequest(r *Request) *Request {
 	data, _ := json.Marshal(r)
 	var copy Request
@@ -522,7 +582,7 @@ func (b *Broker) Submit(spec Spec, source string) (Receipt, error) {
 	}
 	id, token := cryptobox.Token(), cryptobox.Token()
 	now := b.now()
-	r := &Request{ID: id, Spec: spec, Approval: "pending", Execution: "not_started", CreatedAt: now, Deadline: now.Add(time.Duration(spec.WaitSeconds) * time.Second), ReceiptHash: cryptobox.Hash(token), ReceiptUntil: now.Add(24 * time.Hour), Source: source}
+	r := &Request{ID: id, Spec: spec, Display: b.display(spec), Approval: "pending", Execution: "not_started", CreatedAt: now, Deadline: now.Add(time.Duration(spec.WaitSeconds) * time.Second), ReceiptHash: cryptobox.Hash(token), ReceiptUntil: now.Add(24 * time.Hour), Source: source}
 	b.st.Requests[id] = r
 	return Receipt{ID: id, Token: token}, b.changed(r, "requested")
 }
@@ -829,13 +889,19 @@ func (b *Broker) perform(ctx context.Context, token []byte, r *Request) (map[str
 		return values, items, nil, e
 	}
 }
+func origin(raw string) (string, bool) {
+	u, e := url.Parse(raw)
+	if e != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return "", false
+	}
+	return u.Scheme + "://" + u.Host, true
+}
 func (b *Broker) cache(item Item) {
 	item.SyncedAt = b.now()
 	urls := []string{}
 	for _, s := range item.URLs {
-		u, e := url.Parse(s)
-		if e == nil && u.Hostname() != "" && (u.Scheme == "https" || u.Scheme == "http") {
-			urls = append(urls, u.Scheme+"://"+u.Host)
+		if o, ok := origin(s); ok {
+			urls = append(urls, o)
 		}
 	}
 	item.URLs = urls
