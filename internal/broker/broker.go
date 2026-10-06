@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/asuhacoder/handkey/internal/cryptobox"
 )
@@ -131,7 +132,7 @@ func (b *Broker) Bootstrap(name, sessionName string, key, token []byte) (Credent
 	if sessionName == "" {
 		sessionName = name
 	}
-	if len(key) != 32 || len(token) == 0 || len(token) > 16384 || len(name) > maxNameLength || len(sessionName) > maxNameLength {
+	if len(key) != 32 || len(token) == 0 || len(token) > 16384 || !validName(name) || !validName(sessionName) {
 		return Credentials{}, errors.New("invalid registration")
 	}
 	master := cryptobox.Random(32)
@@ -155,6 +156,9 @@ const (
 	maxNameLength   = 128
 )
 
+func validName(name string) bool {
+	return utf8.ValidString(name) && utf8.RuneCountInString(name) <= maxNameLength
+}
 func (b *Broker) newDevice(name, sessionName string, key, master []byte) (*Device, Credentials, error) {
 	id := cryptobox.Token()
 	wrapped, e := cryptobox.Seal(key, master, "device:"+id)
@@ -230,7 +234,7 @@ func (b *Broker) AddDevice(id string, key []byte, name string, newKey []byte) (C
 	if b.broken || b.closed {
 		return Credentials{}, ErrUnavailable
 	}
-	if len(name) > maxNameLength || len(newKey) != 32 {
+	if !validName(name) || len(newKey) != 32 {
 		return Credentials{}, errors.New("invalid registration")
 	}
 	master, token, e := b.unlock(id, key)
@@ -255,7 +259,7 @@ func (b *Broker) CreateSession(device string, key []byte, name string) (Credenti
 	if b.broken || b.closed {
 		return Credentials{}, ErrUnavailable
 	}
-	if len(name) > maxNameLength {
+	if !validName(name) {
 		return Credentials{}, errors.New("invalid session name")
 	}
 	if e := b.verify(device, key); e != nil {

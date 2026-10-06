@@ -85,8 +85,11 @@ func TestSessionsShareOneKey(t *testing.T) {
 			}
 		}
 	}
-	if w = httpCall(t, h, "POST", "/v1/devices/"+c.ID+"/sessions", "", map[string]string{"key": encodeKey(key), "name": strings.Repeat("n", 129)}, ""); w.Code != 400 {
+	if w = httpCall(t, h, "POST", "/v1/devices/"+c.ID+"/sessions", "", map[string]string{"key": encodeKey(key), "name": strings.Repeat("鍵", 129)}, ""); w.Code != 400 {
 		t.Fatal("overlong session name accepted", w.Code)
+	}
+	if long := newSession(t, h, c.ID, key, strings.Repeat("鍵", 128)); viewStatus(t, h, long.ViewToken) != 200 {
+		t.Fatal("128-character session name rejected")
 	}
 	if w = httpCall(t, h, "GET", "/v1/devices/"+cryptobox.Token()+"/sessions", c.ViewToken, nil, ""); w.Code != 404 {
 		t.Fatal("listed another device", w.Code)

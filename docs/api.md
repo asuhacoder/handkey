@@ -60,7 +60,7 @@ The response is `201` with the same fields as the bootstrap response. The existi
 
 A session cannot revoke a session on another device. That request returns 404. Revoke the whole device instead.
 
-Session and device names are text that the registering client supplied. The broker limits each name to 128 bytes and does not otherwise check it. Treat a name as untrusted data. Never render a name as HTML.
+Session and device names are text that the registering client supplied. The broker limits each name to 128 characters of valid UTF-8 and does not otherwise check it. Treat a name as untrusted data. Never render a name as HTML.
 
 ### Add or revoke a device
 
