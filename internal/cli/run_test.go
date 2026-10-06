@@ -42,7 +42,7 @@ func cliFixture(t *testing.T) (*broker.Broker, string, broker.Credentials, []byt
 	}
 	t.Cleanup(b.Close)
 	key := cryptobox.Random(32)
-	c, e := b.Bootstrap("phone", key, []byte("test-token"))
+	c, e := b.Bootstrap("phone", "", key, []byte("test-token"))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -59,7 +59,7 @@ func autoApprove(ctx context.Context, b *broker.Broker, c broker.Credentials, ke
 			return
 		case <-ticker.C:
 			for _, r := range b.Requests() {
-				_ = b.Approve(ctx, r.ID, c.ID, key)
+				_ = b.Approve(ctx, r.ID, c.ID, c.SessionID, key)
 			}
 		}
 	}

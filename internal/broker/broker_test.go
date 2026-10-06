@@ -76,7 +76,7 @@ func setup(t *testing.T) (*Broker, *fakeProvider, Credentials, []byte, string) {
 		}
 	})
 	key := cryptobox.Random(32)
-	c, e := b.Bootstrap("phone", key, []byte("service-token-fixture"))
+	c, e := b.Bootstrap("phone", "", key, []byte("service-token-fixture"))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -92,7 +92,7 @@ func submit(t *testing.T, b *Broker, s Spec) Receipt {
 }
 func approve(t *testing.T, b *Broker, r Receipt, c Credentials, key []byte) {
 	t.Helper()
-	if e := b.Approve(context.Background(), r.ID, c.ID, key); e != nil {
+	if e := b.Approve(context.Background(), r.ID, c.ID, c.SessionID, key); e != nil {
 		t.Fatal(e)
 	}
 }
@@ -105,7 +105,7 @@ func TestApprovalReceiptAndLeastData(t *testing.T) {
 	if _, e := b.Consume(r.ID, r.Token); e == nil {
 		t.Fatal("unapproved consume")
 	}
-	if e := b.Approve(context.Background(), r.ID, c.ID, cryptobox.Random(32)); !errors.Is(e, ErrDenied) {
+	if e := b.Approve(context.Background(), r.ID, c.ID, c.SessionID, cryptobox.Random(32)); !errors.Is(e, ErrDenied) {
 		t.Fatal(e)
 	}
 	approve(t, b, r, c, key)
@@ -153,7 +153,7 @@ func TestConcurrentDecisionsExecuteOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if b.Approve(context.Background(), r.ID, c.ID, key) == nil {
+			if b.Approve(context.Background(), r.ID, c.ID, c.SessionID, key) == nil {
 				successes.Add(1)
 			}
 		}()
@@ -174,14 +174,14 @@ func TestCancelDenyExpireWin(t *testing.T) {
 					t.Fatal(e)
 				}
 			case "deny":
-				if e := b.Reject(r.ID, c.ID); e != nil {
+				if e := b.Reject(r.ID, c.ID, c.SessionID); e != nil {
 					t.Fatal(e)
 				}
 			case "expire":
 				future := time.Now().Add(2 * time.Second)
 				b.now = func() time.Time { return future }
 			}
-			if e := b.Approve(context.Background(), r.ID, c.ID, key); !errors.Is(e, ErrConflict) {
+			if e := b.Approve(context.Background(), r.ID, c.ID, c.SessionID, key); !errors.Is(e, ErrConflict) {
 				t.Fatal(e)
 			}
 			if p.reads.Load() != 0 {
@@ -278,27 +278,17 @@ func TestDeviceRevocationAndRotation(t *testing.T) {
 	if e = b.Revoke(c.ID, key, c2.ID); e != nil {
 		t.Fatal(e)
 	}
-	if _, e = b.View(c2.ViewToken); !errors.Is(e, ErrDenied) {
+	if _, _, e = b.View(c2.ViewToken); !errors.Is(e, ErrDenied) {
 		t.Fatal(e)
 	}
 	r := submit(t, b, Spec{Method: "reveal", Refs: []Ref{testRef}})
-	if e = b.Approve(context.Background(), r.ID, c2.ID, k2); !errors.Is(e, ErrDenied) {
+	if e = b.Approve(context.Background(), r.ID, c2.ID, c2.SessionID, k2); !errors.Is(e, ErrDenied) {
 		t.Fatal(e)
 	}
 	if e = b.Rotate(c.ID, key, []byte("rotated-token")); e != nil {
 		t.Fatal(e)
 	}
 	approve(t, b, r, c, key)
-	renewed, e := b.Renew(c.ID, key)
-	if e != nil {
-		t.Fatal(e)
-	}
-	if _, e = b.View(c.ViewToken); e == nil {
-		t.Fatal("old view token")
-	}
-	if _, e = b.View(renewed.ViewToken); e != nil {
-		t.Fatal(e)
-	}
 }
 func TestRequestValidationAndFreezing(t *testing.T) {
 	b, _, _, _, _ := setup(t)
@@ -379,7 +369,7 @@ func TestFailedPersistenceStopsExecution(t *testing.T) {
 	if e := os.Mkdir(filepath.Join(dir, "state.enc"), 0700); e != nil {
 		t.Fatal(e)
 	}
-	if e := b.Approve(context.Background(), r.ID, c.ID, key); !errors.Is(e, ErrUnavailable) {
+	if e := b.Approve(context.Background(), r.ID, c.ID, c.SessionID, key); !errors.Is(e, ErrUnavailable) {
 		t.Fatal(e)
 	}
 	if p.reads.Load() != 0 {

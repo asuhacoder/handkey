@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,11 +16,12 @@ import (
 )
 
 var (
-	ErrDenied      = errors.New("authentication failed")
-	ErrConflict    = errors.New("request is no longer pending")
-	ErrUnavailable = errors.New("operation unavailable; inspect request status")
-	ErrMissing     = errors.New("not found or not authorized")
-	ErrExpired     = errors.New("result or lease expired; submit a new request")
+	ErrDenied       = errors.New("authentication failed")
+	ErrConflict     = errors.New("request is no longer pending")
+	ErrSessionLimit = errors.New("session limit reached; revoke a session first")
+	ErrUnavailable  = errors.New("operation unavailable; inspect request status")
+	ErrMissing      = errors.New("not found or not authorized")
+	ErrExpired      = errors.New("result or lease expired; submit a new request")
 )
 
 // Provider is only called while an approval key has unlocked the token.
@@ -101,6 +103,7 @@ func (b *Broker) changed(r *Request, kind string) error {
 		a.Refs = r.Spec.Refs
 		a.Origin = r.Spec.Origin
 		a.Device = r.ApprovedBy
+		a.Session = r.ApprovedSession
 		a.TTL = r.Spec.TTLSeconds
 		a.Uses = r.Spec.Uses
 	}
@@ -116,7 +119,7 @@ func (b *Broker) Initialized() bool {
 	defer b.mu.Unlock()
 	return len(b.st.EncryptedToken) > 0
 }
-func (b *Broker) Bootstrap(name string, key, token []byte) (Credentials, error) {
+func (b *Broker) Bootstrap(name, sessionName string, key, token []byte) (Credentials, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed || b.broken {
@@ -125,7 +128,10 @@ func (b *Broker) Bootstrap(name string, key, token []byte) (Credentials, error) 
 	if len(b.st.EncryptedToken) > 0 {
 		return Credentials{}, ErrConflict
 	}
-	if len(key) != 32 || len(token) == 0 || len(token) > 16384 || len(name) > 128 {
+	if sessionName == "" {
+		sessionName = name
+	}
+	if len(key) != 32 || len(token) == 0 || len(token) > 16384 || len(name) > maxNameLength || len(sessionName) > maxNameLength {
 		return Credentials{}, errors.New("invalid registration")
 	}
 	master := cryptobox.Random(32)
@@ -134,20 +140,45 @@ func (b *Broker) Bootstrap(name string, key, token []byte) (Credentials, error) 
 	if e != nil {
 		return Credentials{}, e
 	}
-	d, c, e := b.newDevice(name, key, master)
+	d, c, e := b.newDevice(name, sessionName, key, master)
 	if e != nil {
-		return c, e
+		return Credentials{}, e
 	}
 	b.st.EncryptedToken = encrypted
 	b.st.Devices[d.ID] = d
 	return c, b.changed(nil, "bootstrap")
 }
-func (b *Broker) newDevice(name string, key, master []byte) (*Device, Credentials, error) {
+
+const (
+	sessionLifetime = 90 * 24 * time.Hour
+	maxSessions     = 16
+	maxNameLength   = 128
+)
+
+func (b *Broker) newDevice(name, sessionName string, key, master []byte) (*Device, Credentials, error) {
 	id := cryptobox.Token()
-	view := cryptobox.Token()
 	wrapped, e := cryptobox.Seal(key, master, "device:"+id)
-	until := b.now().Add(90 * 24 * time.Hour)
-	return &Device{ID: id, Name: name, WrappedKey: wrapped, ViewHash: cryptobox.Hash(view), ViewUntil: until}, Credentials{ID: id, ViewToken: view, ViewUntil: until}, e
+	d := &Device{ID: id, Name: name, WrappedKey: wrapped, Sessions: map[string]*Session{}}
+	return d, b.newSession(d, sessionName), e
+}
+func (b *Broker) newSession(d *Device, name string) Credentials {
+	view := cryptobox.Token()
+	s := &Session{ID: cryptobox.Token(), Name: name, ViewHash: cryptobox.Hash(view), CreatedAt: b.now(), ViewUntil: b.now().Add(sessionLifetime)}
+	d.Sessions[s.ID] = s
+	return Credentials{ID: d.ID, SessionID: s.ID, ViewToken: view, ViewUntil: s.ViewUntil}
+}
+
+// live returns the session only while its device is active and it is unexpired.
+func (b *Broker) live(device, session string) *Session {
+	d := b.st.Devices[device]
+	if d == nil || d.Revoked {
+		return nil
+	}
+	s := d.Sessions[session]
+	if s == nil || !b.now().Before(s.ViewUntil) {
+		return nil
+	}
+	return s
 }
 func (b *Broker) unlock(id string, key []byte) ([]byte, []byte, error) {
 	d := b.st.Devices[id]
@@ -165,26 +196,41 @@ func (b *Broker) unlock(id string, key []byte) ([]byte, []byte, error) {
 	}
 	return master, token, nil
 }
-func (b *Broker) View(token string) (string, error) {
+
+// verify proves possession of the device key without keeping what it unlocks.
+func (b *Broker) verify(id string, key []byte) error {
+	master, token, e := b.unlock(id, key)
+	cryptobox.Wipe(master)
+	cryptobox.Wipe(token)
+	return e
+}
+
+// View resolves a view token to the device and session it belongs to.
+func (b *Broker) View(token string) (string, string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.broken || b.closed {
-		return "", ErrUnavailable
+		return "", "", ErrUnavailable
 	}
 	for _, d := range b.st.Devices {
-		if !d.Revoked && b.now().Before(d.ViewUntil) && cryptobox.Matches(d.ViewHash, token) {
-			return d.ID, nil
+		for _, s := range d.Sessions {
+			if cryptobox.Matches(s.ViewHash, token) && b.live(d.ID, s.ID) != nil {
+				return d.ID, s.ID, nil
+			}
 		}
 	}
-	return "", ErrDenied
+	return "", "", ErrDenied
 }
+
+// AddDevice registers a second key. Clients that share an existing key call
+// CreateSession instead.
 func (b *Broker) AddDevice(id string, key []byte, name string, newKey []byte) (Credentials, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.broken || b.closed {
 		return Credentials{}, ErrUnavailable
 	}
-	if len(name) > 128 || len(newKey) != 32 {
+	if len(name) > maxNameLength || len(newKey) != 32 {
 		return Credentials{}, errors.New("invalid registration")
 	}
 	master, token, e := b.unlock(id, key)
@@ -193,12 +239,91 @@ func (b *Broker) AddDevice(id string, key []byte, name string, newKey []byte) (C
 	}
 	defer cryptobox.Wipe(master)
 	defer cryptobox.Wipe(token)
-	d, c, e := b.newDevice(name, newKey, master)
+	d, c, e := b.newDevice(name, name, newKey, master)
 	if e != nil {
-		return c, e
+		return Credentials{}, e
 	}
 	b.st.Devices[d.ID] = d
 	return c, b.changed(nil, "device_added")
+}
+
+// CreateSession issues another view token for a device. The device key is the
+// only credential, so an unknown device and a wrong key are indistinguishable.
+func (b *Broker) CreateSession(device string, key []byte, name string) (Credentials, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.broken || b.closed {
+		return Credentials{}, ErrUnavailable
+	}
+	if len(name) > maxNameLength {
+		return Credentials{}, errors.New("invalid session name")
+	}
+	if e := b.verify(device, key); e != nil {
+		return Credentials{}, e
+	}
+	d := b.st.Devices[device]
+	active := 0
+	for id := range d.Sessions {
+		if b.live(device, id) != nil {
+			active++
+		}
+	}
+	if active >= maxSessions {
+		return Credentials{}, ErrSessionLimit
+	}
+	return b.newSession(d, name), b.changed(nil, "session_created")
+}
+
+// Sessions lists the active sessions of the caller's own device.
+func (b *Broker) Sessions(device, session, target string) ([]SessionInfo, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.broken || b.closed {
+		return nil, ErrUnavailable
+	}
+	if b.live(device, session) == nil {
+		return nil, ErrDenied
+	}
+	if target != device {
+		return nil, ErrMissing
+	}
+	out := []SessionInfo{}
+	for id, s := range b.st.Devices[device].Sessions {
+		if b.live(device, id) != nil {
+			out = append(out, SessionInfo{SessionID: id, Name: s.Name, CreatedAt: s.CreatedAt, ViewUntil: s.ViewUntil, Current: id == session})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].SessionID < out[j].SessionID
+	})
+	return out, nil
+}
+
+// RevokeSession ends one session of the caller's device. A session may end
+// itself with its view token alone; ending a sibling also needs the device key.
+func (b *Broker) RevokeSession(device, session, target string, key []byte) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.broken || b.closed {
+		return ErrUnavailable
+	}
+	if b.live(device, session) == nil {
+		return ErrDenied
+	}
+	d := b.st.Devices[device]
+	if d.Sessions[target] == nil {
+		return ErrMissing
+	}
+	if target != session {
+		if e := b.verify(device, key); e != nil {
+			return e
+		}
+	}
+	delete(d.Sessions, target)
+	return b.changed(nil, "session_revoked")
 }
 func (b *Broker) Revoke(id string, key []byte, target string) error {
 	b.mu.Lock()
@@ -206,37 +331,17 @@ func (b *Broker) Revoke(id string, key []byte, target string) error {
 	if b.broken || b.closed {
 		return ErrUnavailable
 	}
-	master, token, e := b.unlock(id, key)
-	if e != nil {
+	if e := b.verify(id, key); e != nil {
 		return e
 	}
-	defer cryptobox.Wipe(master)
-	defer cryptobox.Wipe(token)
 	d := b.st.Devices[target]
 	if d == nil {
 		return ErrMissing
 	}
 	d.Revoked = true
 	d.WrappedKey = nil
+	d.Sessions = map[string]*Session{}
 	return b.changed(nil, "device_revoked")
-}
-func (b *Broker) Renew(id string, key []byte) (Credentials, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.broken || b.closed {
-		return Credentials{}, ErrUnavailable
-	}
-	master, token, e := b.unlock(id, key)
-	if e != nil {
-		return Credentials{}, e
-	}
-	defer cryptobox.Wipe(master)
-	defer cryptobox.Wipe(token)
-	d := b.st.Devices[id]
-	view := cryptobox.Token()
-	d.ViewHash = cryptobox.Hash(view)
-	d.ViewUntil = b.now().Add(90 * 24 * time.Hour)
-	return Credentials{ID: id, ViewToken: view, ViewUntil: d.ViewUntil}, b.changed(nil, "view_renewed")
 }
 func (b *Broker) Rotate(id string, key, token []byte) error {
 	b.mu.Lock()
@@ -476,6 +581,14 @@ func (b *Broker) Sweep() {
 			delete(b.executions, id)
 		}
 	}
+	for _, d := range b.st.Devices {
+		for id, s := range d.Sessions {
+			if !b.now().Before(s.ViewUntil) {
+				delete(d.Sessions, id)
+				changed = true
+			}
+		}
+	}
 	if changed {
 		_ = b.changed(nil, "expired")
 	}
@@ -524,7 +637,7 @@ func (b *Broker) Cancel(id, token string) error {
 	r.Approval = "cancelled"
 	return b.changed(r, "cancelled")
 }
-func (b *Broker) Reject(id, device string) error {
+func (b *Broker) Reject(id, device, session string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.broken || b.closed {
@@ -534,8 +647,7 @@ func (b *Broker) Reject(id, device string) error {
 	if r == nil {
 		return ErrMissing
 	}
-	d := b.st.Devices[device]
-	if d == nil || d.Revoked {
+	if b.live(device, session) == nil {
 		return ErrDenied
 	}
 	if b.expireLocked(r) {
@@ -548,9 +660,14 @@ func (b *Broker) Reject(id, device string) error {
 	}
 	r.Approval = "denied"
 	r.ApprovedBy = device
+	r.ApprovedSession = session
 	return b.changed(r, "denied")
 }
-func (b *Broker) Approve(ctx context.Context, id, device string, key []byte) error {
+
+// Approve takes the caller's device and session as resolved by View. The key
+// must unlock that same device, so a session cannot approve with another
+// device's key.
+func (b *Broker) Approve(ctx context.Context, id, device, session string, key []byte) error {
 	b.mu.Lock()
 	if b.closed || b.broken {
 		b.mu.Unlock()
@@ -571,6 +688,10 @@ func (b *Broker) Approve(ctx context.Context, id, device string, key []byte) err
 		b.mu.Unlock()
 		return ErrConflict
 	}
+	if b.live(device, session) == nil {
+		b.mu.Unlock()
+		return ErrDenied
+	}
 	master, token, e := b.unlock(device, key)
 	if e != nil {
 		b.mu.Unlock()
@@ -579,6 +700,7 @@ func (b *Broker) Approve(ctx context.Context, id, device string, key []byte) err
 	cryptobox.Wipe(master)
 	r.Approval = "approved"
 	r.ApprovedBy = device
+	r.ApprovedSession = session
 	r.ApprovedAt = b.now()
 	r.Execution = "running"
 	if e = b.changed(r, "approved"); e != nil {
