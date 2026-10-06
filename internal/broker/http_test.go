@@ -8,9 +8,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asuhacoder/handkey/internal/cryptobox"
 )
 
 func httpCall(t *testing.T, h http.Handler, method, path, token string, body any, origin string) *httptest.ResponseRecorder {
@@ -35,7 +38,7 @@ func httpCall(t *testing.T, h http.Handler, method, path, token string, body any
 }
 func TestHTTPAuthorizationAndCORS(t *testing.T) {
 	b, _, c, key, _ := setup(t)
-	h := b.Handler(HTTPOptions{AllowedOrigins: []string{"https://approve.example.com"}})
+	h := b.Handler(HTTPOptions{Surfaces: AgentSurface | ApproverSurface, AllowedOrigins: []string{"https://approve.example.com"}})
 	r := submit(t, b, Spec{Method: "reveal", Refs: []Ref{testRef}})
 	for _, v := range []struct {
 		path, token string
@@ -69,7 +72,7 @@ func TestHTTPAuthorizationAndCORS(t *testing.T) {
 }
 func TestMalformedHTTPAndNoFrontend(t *testing.T) {
 	b, _, _, _, _ := setup(t)
-	h := b.Handler(HTTPOptions{})
+	h := b.Handler(HTTPOptions{Surfaces: AgentSurface | ApproverSurface})
 	for _, path := range []string{"/", "/register", "/index.html"} {
 		w := httpCall(t, h, "GET", path, "", nil, "")
 		if w.Code != 404 {
@@ -109,7 +112,7 @@ func TestProxyDestinationAndLifetime(t *testing.T) {
 	future := time.Now().Add(2 * time.Second)
 	b.now = func() time.Time { return future }
 	b.Sweep() // execution survives lease expiry
-	h := b.Handler(HTTPOptions{})
+	h := b.Handler(HTTPOptions{Surfaces: AgentSurface | ApproverSurface})
 	r := httptest.NewRequest("GET", "/v1/requests/"+receipt.ID+"/proxy/https:%2F%2Fevil.example/path", nil)
 	r.Host = "evil.example"
 	r.Header.Set("Cookie", "private")
@@ -118,6 +121,9 @@ func TestProxyDestinationAndLifetime(t *testing.T) {
 	h.ServeHTTP(w, r)
 	if w.Code != 302 || receivedHost != strings.TrimPrefix(upstream.URL, "https://") || receivedAuth != "Bearer "+sentinel || receivedCookie != "" {
 		t.Fatal(w.Code, receivedHost, receivedCookie)
+	}
+	if w = httpCall(t, h, "GET", "/v1/requests/"+receipt.ID+"/proxy/..%2F..", result.ExecutionToken, nil, ""); w.Code != 302 || receivedHost != strings.TrimPrefix(upstream.URL, "https://") {
+		t.Fatal("escaped traversal changed upstream destination", w.Code, receivedHost)
 	}
 	if w = httpCall(t, h, "POST", "/v1/requests/"+receipt.ID+"/heartbeat", receipt.Token, nil, ""); w.Code != 410 {
 		t.Fatal("receipt cannot act as execution token")
@@ -129,9 +135,35 @@ func TestProxyDestinationAndLifetime(t *testing.T) {
 		t.Fatal("closed execution alive")
 	}
 }
+func TestProxyEscapedPath(t *testing.T) {
+	b, _, c, key, _ := setup(t)
+	receivedPath := make(chan string, 1)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath <- r.URL.EscapedPath()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	old := proxyClient
+	proxyClient = upstream.Client()
+	defer func() { proxyClient = old }()
+	receipt := submit(t, b, Spec{Method: "proxy", Refs: []Ref{testRef}, Origin: upstream.URL, Header: "Authorization", Prefix: "Bearer ", Command: []string{"curl"}, Directory: "/"})
+	approve(t, b, receipt, c, key)
+	result, e := b.Consume(receipt.ID, receipt.Token)
+	if e != nil {
+		t.Fatal(e)
+	}
+	h := b.Handler(HTTPOptions{Surfaces: AgentSurface})
+	w := httpCall(t, h, "GET", "/v1/requests/"+receipt.ID+"/proxy/api/v4/projects/group%2Fproject", result.ExecutionToken, nil, "")
+	if w.Code != http.StatusNoContent {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if got := <-receivedPath; got != "/api/v4/projects/group%2Fproject" {
+		t.Fatalf("upstream escaped path = %q, want %q", got, "/api/v4/projects/group%2Fproject")
+	}
+}
 func TestSSEFanout(t *testing.T) {
 	b, _, c, _, _ := setup(t)
-	server := httptest.NewServer(b.Handler(HTTPOptions{}))
+	server := httptest.NewServer(b.Handler(HTTPOptions{Surfaces: AgentSurface | ApproverSurface}))
 	defer server.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -160,5 +192,77 @@ func TestSSEFanout(t *testing.T) {
 		if e != nil || !strings.Contains(string(buffer[:n]), receipt.ID) {
 			t.Fatal("missing event", e)
 		}
+	}
+}
+func TestListenerSurfacesAreSeparate(t *testing.T) {
+	b, _, c, key, _ := setup(t)
+	agent := b.Handler(HTTPOptions{Surfaces: AgentSurface})
+	approver := b.Handler(HTTPOptions{Surfaces: ApproverSurface})
+	spec := map[string]any{"method": "reveal", "refs": []Ref{testRef}}
+	approval := map[string]string{"key": base64.RawURLEncoding.EncodeToString(key)}
+	r := submit(t, b, Spec{Method: "reveal", Refs: []Ref{testRef}})
+	for _, v := range []struct {
+		name         string
+		h            http.Handler
+		method, path string
+		token        string
+		body         any
+		want         int
+	}{
+		{"approver submit", approver, "POST", "/v1/requests", "", spec, 405},
+		{"approver items", approver, "GET", "/v1/items", "", nil, 404},
+		{"approver status by receipt", approver, "GET", "/v1/requests/" + r.ID, r.Token, nil, 401},
+		{"approver consume", approver, "POST", "/v1/requests/" + r.ID + "/consume", r.Token, nil, 404},
+		{"approver cancel", approver, "POST", "/v1/requests/" + r.ID + "/cancel", r.Token, nil, 404},
+		{"agent list", agent, "GET", "/v1/requests", c.ViewToken, nil, 405},
+		{"agent status by view token", agent, "GET", "/v1/requests/" + r.ID, c.ViewToken, nil, 404},
+		{"agent approve", agent, "POST", "/v1/requests/" + r.ID + "/approve", c.ViewToken, approval, 404},
+		{"agent deny", agent, "POST", "/v1/requests/" + r.ID + "/deny", c.ViewToken, nil, 404},
+		{"agent create session", agent, "POST", "/v1/devices/" + c.ID + "/sessions", "", map[string]string{"key": approval["key"], "name": "x"}, 404},
+		{"agent list sessions", agent, "GET", "/v1/devices/" + c.ID + "/sessions", c.ViewToken, nil, 404},
+		{"agent revoke session", agent, "POST", "/v1/sessions/" + c.SessionID + "/revoke", c.ViewToken, nil, 404},
+		{"agent submit", agent, "POST", "/v1/requests", "", spec, 202},
+		{"agent items", agent, "GET", "/v1/items", "", nil, 200},
+		{"agent status by receipt", agent, "GET", "/v1/requests/" + r.ID, r.Token, nil, 200},
+		{"approver list", approver, "GET", "/v1/requests", c.ViewToken, nil, 200},
+		{"approver status by view token", approver, "GET", "/v1/requests/" + r.ID, c.ViewToken, nil, 200},
+		{"approver approve", approver, "POST", "/v1/requests/" + r.ID + "/approve", c.ViewToken, approval, 200},
+		{"agent consume", agent, "POST", "/v1/requests/" + r.ID + "/consume", r.Token, nil, 200},
+		{"agent health", agent, "GET", "/healthz", "", nil, 200},
+		{"approver health", approver, "GET", "/healthz", "", nil, 200},
+	} {
+		if w := httpCall(t, v.h, v.method, v.path, v.token, v.body, ""); w.Code != v.want {
+			t.Errorf("%s: got %d, want %d", v.name, w.Code, v.want)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	events := httptest.NewRequest("GET", "/v1/events", nil).WithContext(ctx)
+	events.Header.Set("Authorization", "Bearer "+c.ViewToken)
+	w := httptest.NewRecorder()
+	agent.ServeHTTP(w, events)
+	if w.Code != 404 {
+		t.Errorf("agent events: got %d, want 404", w.Code)
+	}
+}
+func TestBootstrapOnlyOnApproverSurface(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.Chmod(dir, 0700)
+	b, e := Open(dir, &fakeProvider{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	t.Cleanup(b.Close)
+	body := map[string]string{"name": "phone", "key": base64.RawURLEncoding.EncodeToString(cryptobox.Random(32)), "service_account_token": "service-token-fixture"}
+	agent := b.Handler(HTTPOptions{Surfaces: AgentSurface, Bootstrap: true})
+	if w := httpCall(t, agent, "POST", "/v1/bootstrap", "", body, ""); w.Code != 404 {
+		t.Fatalf("agent surface bootstrap: got %d, want 404", w.Code)
+	}
+	if b.Initialized() {
+		t.Fatal("agent surface initialized the broker")
+	}
+	approver := b.Handler(HTTPOptions{Surfaces: ApproverSurface, Bootstrap: true})
+	if w := httpCall(t, approver, "POST", "/v1/bootstrap", "", body, ""); w.Code != 201 {
+		t.Fatalf("approver surface bootstrap: got %d, want 201", w.Code)
 	}
 }

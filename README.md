@@ -41,9 +41,9 @@ handkey serve \
   --listen 127.0.0.1:7843 --dev --bootstrap
 ```
 
-This prints endpoint addresses only. It does not print keys, tokens, or a registration website. `--bootstrap` enables the first-device API until initialization succeeds; expose it only to the intended first client. Use the separately implemented approval client and the [client API contract](docs/api.md) to register a client-generated 32-byte key and a service account token. There is no built-in approval command or webpage that takes custody of a user's key on behalf of an agent.
+This prints endpoint addresses only. It does not print keys, tokens, or a registration website. When you set `--listen`, the Unix socket serves the agent API only and `--listen` serves the approval API only. `--bootstrap` then enables the first-device API on `--listen` until initialization succeeds; expose it only to the intended first client. Without `--listen`, the socket serves both APIs, so every process that can open the socket can register the first device. Use the separately implemented approval client and the [client API contract](docs/api.md) to register a client-generated 32-byte key and a service account token. There is no built-in approval command or webpage that takes custody of a user's key on behalf of an agent.
 
-For remote access, supply `--tls-cert`, `--tls-key`, and a restricted listen address instead of development HTTP. Configure `--origins` with the exact HTTPS origin of an independently hosted browser client. Restrict remote agents using tailnet ACLs or an equivalent private network; the agent API intentionally has no login. HTTPS alone does **not** restrict who can submit requests. See [deployment](docs/deployment.md).
+For remote access, supply `--tls-cert`, `--tls-key`, and a restricted listen address instead of development HTTP. Configure `--origins` with the exact HTTPS origin of an independently hosted browser client. Agents on another host need `--remote-agents`, which adds the agent API to `--listen`. Restrict that address using tailnet ACLs or an equivalent private network; the agent API intentionally has no login, and anyone who can reach it can submit a request for you to approve. HTTPS alone does **not** restrict who can submit requests. See [deployment](docs/deployment.md).
 
 ## Use the CLI
 
@@ -105,7 +105,7 @@ Supported `item list` returns a Handkey metadata envelope (`items`, `synced`, `l
 ## Architecture and boundaries
 
 ```text
-Agent / CLI ── Unix socket or restricted HTTPS ── Broker ── isolated real op ── 1Password
+Agent / CLI ── Unix socket (or --remote-agents HTTPS) ── Broker ── isolated real op ── 1Password
                                                     ▲
 Separate approval client ── HTTPS, view token + key ──┘
 

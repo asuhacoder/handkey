@@ -51,7 +51,7 @@ func viewStatus(t *testing.T, h http.Handler, token string) int {
 
 func TestSessionsShareOneKey(t *testing.T) {
 	b, _, c, key, dir := setup(t)
-	h := b.Handler(HTTPOptions{})
+	h := b.Handler(HTTPOptions{Surfaces: ApproverSurface})
 	page := newSession(t, h, c.ID, key, "Phone page")
 	plugin := newSession(t, h, c.ID, key, "dsh plugin")
 	if page.ID != c.ID || plugin.ID != c.ID || page.SessionID == plugin.SessionID || page.SessionID == c.SessionID {
@@ -111,7 +111,7 @@ func TestSessionsShareOneKey(t *testing.T) {
 
 func TestSessionCreationNeedsTheDeviceKey(t *testing.T) {
 	b, _, c, key, _ := setup(t)
-	h := b.Handler(HTTPOptions{})
+	h := b.Handler(HTTPOptions{Surfaces: ApproverSurface})
 	wrongKey := httpCall(t, h, "POST", "/v1/devices/"+c.ID+"/sessions", c.ViewToken, map[string]string{"key": encodeKey(cryptobox.Random(32)), "name": "x"}, "")
 	noDevice := httpCall(t, h, "POST", "/v1/devices/"+cryptobox.Token()+"/sessions", "", map[string]string{"key": encodeKey(key), "name": "x"}, "")
 	if wrongKey.Code != 401 || noDevice.Code != 401 || wrongKey.Body.String() != noDevice.Body.String() {
@@ -124,7 +124,7 @@ func TestSessionCreationNeedsTheDeviceKey(t *testing.T) {
 
 func TestDecisionRecordsTheSession(t *testing.T) {
 	b, _, c, key, dir := setup(t)
-	h := b.Handler(HTTPOptions{})
+	h := b.Handler(HTTPOptions{Surfaces: ApproverSurface})
 	a := newSession(t, h, c.ID, key, "A")
 	other := newSession(t, h, c.ID, key, "B")
 	approved := submit(t, b, Spec{Method: "reveal", Refs: []Ref{testRef}})
@@ -163,7 +163,7 @@ func TestDecisionRecordsTheSession(t *testing.T) {
 
 func TestApprovalNeedsTheKeyOfTheSessionsDevice(t *testing.T) {
 	b, _, c, key, _ := setup(t)
-	h := b.Handler(HTTPOptions{})
+	h := b.Handler(HTTPOptions{Surfaces: ApproverSurface})
 	secondKey := cryptobox.Random(32)
 	second, e := b.AddDevice(c.ID, key, "Even app", secondKey)
 	if e != nil {
@@ -192,7 +192,7 @@ func TestApprovalNeedsTheKeyOfTheSessionsDevice(t *testing.T) {
 
 func TestSessionRevocation(t *testing.T) {
 	b, _, c, key, _ := setup(t)
-	h := b.Handler(HTTPOptions{})
+	h := b.Handler(HTTPOptions{Surfaces: ApproverSurface})
 	a := newSession(t, h, c.ID, key, "A")
 	other := newSession(t, h, c.ID, key, "B")
 	secondKey := cryptobox.Random(32)
@@ -231,7 +231,7 @@ func TestSessionRevocation(t *testing.T) {
 
 func TestDeviceRevocationEndsEverySession(t *testing.T) {
 	b, _, c, key, _ := setup(t)
-	server := httptest.NewServer(b.Handler(HTTPOptions{}))
+	server := httptest.NewServer(b.Handler(HTTPOptions{Surfaces: ApproverSurface}))
 	defer server.Close()
 	h := server.Config.Handler
 	secondKey := cryptobox.Random(32)
@@ -280,7 +280,7 @@ func TestDeviceRevocationEndsEverySession(t *testing.T) {
 
 func TestSessionLimit(t *testing.T) {
 	b, _, c, key, _ := setup(t)
-	h := b.Handler(HTTPOptions{})
+	h := b.Handler(HTTPOptions{Surfaces: ApproverSurface})
 	tokens := []string{c.ViewToken}
 	for i := 2; i <= 16; i++ {
 		tokens = append(tokens, newSession(t, h, c.ID, key, fmt.Sprint("client ", i)).ViewToken)
@@ -317,7 +317,7 @@ func TestSessionLimit(t *testing.T) {
 
 func TestSessionExpiry(t *testing.T) {
 	b, _, c, key, _ := setup(t)
-	h := b.Handler(HTTPOptions{})
+	h := b.Handler(HTTPOptions{Surfaces: ApproverSurface})
 	late := time.Now().Add(91 * 24 * time.Hour)
 	b.now = func() time.Time { return late }
 	r := submit(t, b, Spec{Method: "reveal", Refs: []Ref{testRef}})
@@ -389,7 +389,7 @@ func TestVersion1StateMigration(t *testing.T) {
 		if e != nil {
 			t.Fatal(pass, e)
 		}
-		h := b.Handler(HTTPOptions{})
+		h := b.Handler(HTTPOptions{Surfaces: ApproverSurface})
 		if viewStatus(t, h, token) != 200 || viewStatus(t, h, revokedToken) != 401 {
 			t.Fatal("pass", pass, "existing view token must survive, revoked one must not")
 		}
@@ -419,7 +419,7 @@ func TestVersion1StateMigration(t *testing.T) {
 
 func TestRenewRouteIsGone(t *testing.T) {
 	b, _, c, key, _ := setup(t)
-	h := b.Handler(HTTPOptions{})
+	h := b.Handler(HTTPOptions{Surfaces: ApproverSurface})
 	w := httpCall(t, h, "POST", "/v1/devices/"+c.ID+"/renew", c.ViewToken, map[string]string{"key": encodeKey(key)}, "")
 	if w.Code != 404 {
 		t.Fatal(w.Code, w.Body.String())

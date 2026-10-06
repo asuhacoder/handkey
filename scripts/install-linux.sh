@@ -32,7 +32,7 @@ HANDKEY_LISTEN=
 HANDKEY_TLS_CERT=
 HANDKEY_TLS_KEY=
 HANDKEY_ORIGINS=
-HANDKEY_BOOTSTRAP=--bootstrap
+HANDKEY_BOOTSTRAP=
 ENV
   chown root:handkey /etc/handkey/server.env
   chmod 0640 /etc/handkey/server.env
