@@ -90,14 +90,7 @@ func (b *Broker) Close() {
 	b.disk.close()
 }
 func (b *Broker) changed(r *Request, kind string) error {
-	if b.broken {
-		return ErrUnavailable
-	}
-	if e := b.disk.save(&b.st); e != nil {
-		b.broken = true
-		return ErrUnavailable
-	}
-	a := Audit{At: b.now(), Kind: kind}
+	a := Audit{Kind: kind}
 	if r != nil {
 		a.Request = r.ID
 		a.Method = r.Spec.Method
@@ -108,11 +101,26 @@ func (b *Broker) changed(r *Request, kind string) error {
 		a.TTL = r.Spec.TTLSeconds
 		a.Uses = r.Spec.Uses
 	}
+	return b.commit(a)
+}
+
+// commit saves the state, then appends the audit record and notifies
+// subscribers. For a registration event, Device and Session name the device or
+// session that was created or revoked.
+func (b *Broker) commit(a Audit) error {
+	if b.broken {
+		return ErrUnavailable
+	}
+	if e := b.disk.save(&b.st); e != nil {
+		b.broken = true
+		return ErrUnavailable
+	}
+	a.At = b.now()
 	if e := b.disk.audit(a); e != nil {
 		b.broken = true
 		return ErrUnavailable
 	}
-	b.events.send(Event{ID: a.Request, Kind: kind, At: a.At})
+	b.events.send(Event{ID: a.Request, Kind: a.Kind, At: a.At})
 	return nil
 }
 func (b *Broker) Initialized() bool {
@@ -147,7 +155,7 @@ func (b *Broker) Bootstrap(name, sessionName string, key, token []byte) (Credent
 	}
 	b.st.EncryptedToken = encrypted
 	b.st.Devices[d.ID] = d
-	return c, b.changed(nil, "bootstrap")
+	return c, b.commit(Audit{Kind: "bootstrap", Device: c.ID, Session: c.SessionID})
 }
 
 const (
@@ -248,7 +256,7 @@ func (b *Broker) AddDevice(id string, key []byte, name string, newKey []byte) (C
 		return Credentials{}, e
 	}
 	b.st.Devices[d.ID] = d
-	return c, b.changed(nil, "device_added")
+	return c, b.commit(Audit{Kind: "device_added", Device: c.ID, Session: c.SessionID})
 }
 
 // CreateSession issues another view token for a device. The device key is the
@@ -275,7 +283,8 @@ func (b *Broker) CreateSession(device string, key []byte, name string) (Credenti
 	if active >= maxSessions {
 		return Credentials{}, ErrSessionLimit
 	}
-	return b.newSession(d, name), b.changed(nil, "session_created")
+	c := b.newSession(d, name)
+	return c, b.commit(Audit{Kind: "session_created", Device: c.ID, Session: c.SessionID})
 }
 
 // Sessions lists the active sessions of the caller's own device.
@@ -327,7 +336,7 @@ func (b *Broker) RevokeSession(device, session, target string, key []byte) error
 		}
 	}
 	delete(d.Sessions, target)
-	return b.changed(nil, "session_revoked")
+	return b.commit(Audit{Kind: "session_revoked", Device: device, Session: target})
 }
 func (b *Broker) Revoke(id string, key []byte, target string) error {
 	b.mu.Lock()
@@ -345,7 +354,7 @@ func (b *Broker) Revoke(id string, key []byte, target string) error {
 	d.Revoked = true
 	d.WrappedKey = nil
 	d.Sessions = map[string]*Session{}
-	return b.changed(nil, "device_revoked")
+	return b.commit(Audit{Kind: "device_revoked", Device: target})
 }
 func (b *Broker) Rotate(id string, key, token []byte) error {
 	b.mu.Lock()

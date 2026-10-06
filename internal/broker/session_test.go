@@ -78,6 +78,19 @@ func TestSessionsShareOneKey(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	created := map[string]string{}
+	for _, line := range bytes.Split(bytes.TrimSpace(audit), []byte("\n")) {
+		var entry Audit
+		if e = json.Unmarshal(line, &entry); e != nil {
+			t.Fatal(e)
+		}
+		if entry.Kind == "session_created" {
+			created[entry.Session] = entry.Device
+		}
+	}
+	if len(created) != 2 || created[page.SessionID] != c.ID || created[plugin.SessionID] != c.ID {
+		t.Fatal("audit must name each created session", created)
+	}
 	for _, token := range []string{c.ViewToken, page.ViewToken, plugin.ViewToken} {
 		for _, secret := range []string{token, cryptobox.Hash(token)} {
 			if bytes.Contains(audit, []byte(secret)) || strings.Contains(w.Body.String(), secret) {
@@ -148,6 +161,35 @@ func TestDecisionRecordsTheSession(t *testing.T) {
 	}
 }
 
+func TestApprovalNeedsTheKeyOfTheSessionsDevice(t *testing.T) {
+	b, _, c, key, _ := setup(t)
+	h := b.Handler(HTTPOptions{})
+	secondKey := cryptobox.Random(32)
+	second, e := b.AddDevice(c.ID, key, "Even app", secondKey)
+	if e != nil {
+		t.Fatal(e)
+	}
+	r := submit(t, b, Spec{Method: "reveal", Refs: []Ref{testRef}})
+	approveWith := func(token string, k []byte) int {
+		return httpCall(t, h, "POST", "/v1/requests/"+r.ID+"/approve", token, map[string]string{"key": encodeKey(k)}, "").Code
+	}
+	if code := approveWith(c.ViewToken, secondKey); code != 401 {
+		t.Fatal("first device's session approved with the second device's key", code)
+	}
+	if code := approveWith(second.ViewToken, key); code != 401 {
+		t.Fatal("second device's session approved with the first device's key", code)
+	}
+	if got, e := b.Status(r.ID, r.Token); e != nil || got.Approval != "pending" {
+		t.Fatal(got, e)
+	}
+	if code := approveWith(second.ViewToken, secondKey); code != 200 {
+		t.Fatal(code)
+	}
+	if got, e := b.Status(r.ID, r.Token); e != nil || got.ApprovedBy != second.ID || got.ApprovedSession != second.SessionID {
+		t.Fatal(got, e)
+	}
+}
+
 func TestSessionRevocation(t *testing.T) {
 	b, _, c, key, _ := setup(t)
 	h := b.Handler(HTTPOptions{})
@@ -161,8 +203,8 @@ func TestSessionRevocation(t *testing.T) {
 	revoke := func(token, target string, body any) int {
 		return httpCall(t, h, "POST", "/v1/sessions/"+target+"/revoke", token, body, "").Code
 	}
-	if code := revoke(a.ViewToken, a.SessionID, nil); code != 200 {
-		t.Fatal("logout", code)
+	if code := revoke(a.ViewToken, a.SessionID, map[string]string{}); code != 200 {
+		t.Fatal("logout with an empty JSON body", code)
 	}
 	if viewStatus(t, h, a.ViewToken) != 401 || viewStatus(t, h, other.ViewToken) != 200 || viewStatus(t, h, c.ViewToken) != 200 {
 		t.Fatal("logout must end exactly one session")
@@ -211,6 +253,13 @@ func TestDeviceRevocationEndsEverySession(t *testing.T) {
 	if viewStatus(t, h, first.ViewToken) != 401 || viewStatus(t, h, second.ViewToken) != 401 || viewStatus(t, h, c.ViewToken) != 200 {
 		t.Fatal("device revocation must end its own sessions only")
 	}
+	b.mu.Lock()
+	revoked := b.st.Devices[first.ID]
+	cleared := revoked.Revoked && revoked.WrappedKey == nil && len(revoked.Sessions) == 0
+	b.mu.Unlock()
+	if !cleared {
+		t.Fatal("revoked device kept its wrapped key or session hashes")
+	}
 	if w := httpCall(t, h, "POST", "/v1/devices/"+first.ID+"/sessions", "", map[string]string{"key": encodeKey(secondKey), "name": "again"}, ""); w.Code != 401 {
 		t.Fatal("revoked device issued a session", w.Code)
 	}
@@ -245,8 +294,24 @@ func TestSessionLimit(t *testing.T) {
 			t.Fatal("existing session evicted", i)
 		}
 	}
-	if n := len(listSessions(t, h, c)); n != 16 {
-		t.Fatal(n)
+	list := listSessions(t, h, c)
+	if len(list) != 16 {
+		t.Fatal(len(list))
+	}
+	for _, s := range list {
+		if !s.Current {
+			if w = httpCall(t, h, "POST", "/v1/sessions/"+s.SessionID+"/revoke", c.ViewToken, map[string]string{"key": encodeKey(key)}, ""); w.Code != 200 {
+				t.Fatal(w.Code, w.Body.String())
+			}
+			break
+		}
+	}
+	newSession(t, h, c.ID, key, "replaces the revoked session")
+	late := time.Now().Add(91 * 24 * time.Hour)
+	b.now = func() time.Time { return late }
+	fresh := newSession(t, h, c.ID, key, "after every session expired, before the sweep")
+	if viewStatus(t, h, fresh.ViewToken) != 200 {
+		t.Fatal("expired sessions counted against the limit")
 	}
 }
 
@@ -258,6 +323,9 @@ func TestSessionExpiry(t *testing.T) {
 	r := submit(t, b, Spec{Method: "reveal", Refs: []Ref{testRef}})
 	if viewStatus(t, h, c.ViewToken) != 401 {
 		t.Fatal("expired session accepted")
+	}
+	if e := b.Reject(r.ID, c.ID, c.SessionID); !errors.Is(e, ErrDenied) {
+		t.Fatal("expired session denied a request", e)
 	}
 	if e := b.Approve(t.Context(), r.ID, c.ID, c.SessionID, key); !errors.Is(e, ErrDenied) {
 		t.Fatal("expired session approved", e)

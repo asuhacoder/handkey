@@ -55,7 +55,7 @@ The response is `201` with the same fields as the bootstrap response. The existi
 | Method and route | Authentication | Behavior |
 | --- | --- | --- |
 | `GET /v1/devices/DEVICE_ID/sessions` | View token of a session on that device | Active sessions as `[{"session_id","name","created_at","view_until","current"}]`. `current` marks the caller's session. A different device ID returns 404 |
-| `POST /v1/sessions/SESSION_ID/revoke` for the caller's own session | View token, no body | Log out. Only that session ends |
+| `POST /v1/sessions/SESSION_ID/revoke` for the caller's own session | View token. The broker ignores any body | Log out. Only that session ends |
 | `POST /v1/sessions/SESSION_ID/revoke` for another session on the same device | View token plus `{"key":"DEVICE_KEY"}` | End that session. Without the key the response is 401 |
 
 A session cannot revoke a session on another device. That request returns 404. Revoke the whole device instead.

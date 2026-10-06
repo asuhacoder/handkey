@@ -264,15 +264,17 @@ func (a *api) revokeSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// A session ends itself with no body. Ending a sibling carries the device key.
+	// A session ends itself with its view token alone, so any body is ignored.
+	// Ending a sibling carries the device key.
+	target := r.PathValue("sid")
 	var key []byte
-	if r.ContentLength != 0 {
+	if target != session && r.ContentLength != 0 {
 		if key, ok = readKey(w, r); !ok {
 			return
 		}
 		defer cryptobox.Wipe(key)
 	}
-	if e := a.b.RevokeSession(device, session, r.PathValue("sid"), key); e != nil {
+	if e := a.b.RevokeSession(device, session, target, key); e != nil {
 		failure(w, e)
 		return
 	}
