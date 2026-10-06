@@ -300,6 +300,23 @@ func (b *Broker) Sessions(device, session, target string) ([]SessionInfo, error)
 	if target != device {
 		return nil, ErrMissing
 	}
+	return b.listSessions(device, session), nil
+}
+
+// SessionsByKey lists active sessions without requiring an existing session.
+func (b *Broker) SessionsByKey(device string, key []byte) ([]SessionInfo, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.broken || b.closed {
+		return nil, ErrUnavailable
+	}
+	if e := b.verify(device, key); e != nil {
+		return nil, e
+	}
+	return b.listSessions(device, ""), nil
+}
+
+func (b *Broker) listSessions(device, session string) []SessionInfo {
 	out := []SessionInfo{}
 	for id, s := range b.st.Devices[device].Sessions {
 		if b.live(device, id) != nil {
@@ -312,7 +329,7 @@ func (b *Broker) Sessions(device, session, target string) ([]SessionInfo, error)
 		}
 		return out[i].SessionID < out[j].SessionID
 	})
-	return out, nil
+	return out
 }
 
 // RevokeSession ends one session of the caller's device. A session may end
@@ -338,6 +355,25 @@ func (b *Broker) RevokeSession(device, session, target string, key []byte) error
 	delete(d.Sessions, target)
 	return b.commit(Audit{Kind: "session_revoked", Device: device, Session: target})
 }
+
+// RevokeSessionByKey frees a session slot without requiring an existing session.
+func (b *Broker) RevokeSessionByKey(device string, key []byte, target string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.broken || b.closed {
+		return ErrUnavailable
+	}
+	if e := b.verify(device, key); e != nil {
+		return e
+	}
+	d := b.st.Devices[device]
+	if d.Sessions[target] == nil {
+		return ErrMissing
+	}
+	delete(d.Sessions, target)
+	return b.commit(Audit{Kind: "session_revoked", Device: device, Session: target})
+}
+
 func (b *Broker) Revoke(id string, key []byte, target string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()

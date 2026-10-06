@@ -16,7 +16,7 @@ Choose between the two by where the client keeps its key.
 - If a client uses a key that is already registered, add a session to that device. Example: a phone page and a dsh plugin both read the same 1Password item. A separate key for each client adds no protection, because 1Password syncs every key to the same machines.
 - If a client keeps its key somewhere else, register a new device. Example: an Even app that stores its key inside the app.
 
-A view token lets a session list requests, read a request, deny a request, and subscribe to events. Approval and the management operations below also need the key of the device that the session belongs to. A view token cannot be combined with the key of another device.
+A view token lets a session list requests, read a request, deny a request, and subscribe to events. Approval and session-authenticated management operations also need the key of the device that the session belongs to. A view token cannot be combined with the key of another device. Creating a session and the key-only session management routes below need only the device ID and device key.
 
 ### Register the first device
 
@@ -47,7 +47,7 @@ Content-Type: application/json
 The response is `201` with the same fields as the bootstrap response. The existing sessions of the device do not change, and their view tokens stay valid.
 
 - A wrong key and an unknown device ID both return 401 with the same body.
-- If the device already has 16 active sessions, the response is 409. The broker never removes a session to make room. Revoke a session first.
+- If the device already has 16 active sessions, the response is 409 `session limit reached; revoke a session first`. The broker never removes a session to make room. The key-only routes below can list and revoke a session without an existing session.
 - A session expires 90 days after creation. There is no renewal. When a session expires, create a new session with the device key.
 
 ### List and revoke sessions
@@ -55,8 +55,14 @@ The response is `201` with the same fields as the bootstrap response. The existi
 | Method and route | Authentication | Behavior |
 | --- | --- | --- |
 | `GET /v1/devices/DEVICE_ID/sessions` | View token of a session on that device | Active sessions as `[{"session_id","name","created_at","view_until","current"}]`. `current` marks the caller's session. A different device ID returns 404 |
+| `POST /v1/devices/DEVICE_ID/sessions/list` | Device key in `{"key":"DEVICE_KEY"}`. No view token | 200 with the same active-session array, with `current: false` for every entry |
+| `POST /v1/devices/DEVICE_ID/sessions/SESSION_ID/revoke` | Device key in `{"key":"DEVICE_KEY"}`. No view token | End that device's session. The response is `200 {"status":"revoked"}` |
 | `POST /v1/sessions/SESSION_ID/revoke` for the caller's own session | View token. The broker ignores any body | Log out. Only that session ends |
 | `POST /v1/sessions/SESSION_ID/revoke` for another session on the same device | View token plus `{"key":"DEVICE_KEY"}` | End that session. Without the key the response is 401 |
+
+The key-only routes let a client that hit the session limit free a slot without an existing session. They ignore the Authorization header. The key goes in the JSON body, never the URL. A malformed key, a wrong key, an unknown device ID, and a revoked device all return `401 {"error":"authentication failed"}`.
+
+Lists contain only active sessions, ordered by creation time and then session ID. An empty list is `[]`. Key-only revocation checks the key before looking up the session. With the correct key, an unknown session ID or a session on another device returns 404. An expired session still stored on that device can be revoked. Other sessions and their view tokens do not change.
 
 A session cannot revoke a session on another device. That request returns 404. Revoke the whole device instead.
 

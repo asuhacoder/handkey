@@ -5,7 +5,7 @@ Handkey is experimental. Report a vulnerability using GitHub's private vulnerabi
 ## What is enforced
 
 - A client-generated 256-bit device key is required to unwrap the service-account token. An active view token alone can inspect or deny requests, but cannot approve or receive values.
-- A device is a key registration, and a session is one client's view token for that device. Creating a session requires the device key. A session can approve only with the key of its own device. A session can end itself with its view token, and ending another session also requires the device key.
+- A device is a key registration, and a session is one client's view token for that device. The device ID and device key alone can create a session, list that device's active sessions, or revoke one of its sessions. The device key goes in the JSON request body, never the URL. A session can approve only with the key of its own device. A session can end itself with its view token, and ending another session also requires the device key.
 - Canonical vault/item/field IDs and the delivery method are frozen before approval. Leases cannot select extra fields or another proxy origin. A separate receiver capability is required to consume a result.
 - Only the first valid approval/denial/cancellation/expiry transition succeeds. A durable running state is committed before touching `op`. Writes with uncertain outcomes are never automatically retried.
 - `op` gets a minimal environment, a private temporary configuration directory and `--cache=false`. Its authentication token is not placed in the broker's process-wide environment or a user command. Untrusted output and stderr are not used as error messages.
