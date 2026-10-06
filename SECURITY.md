@@ -15,7 +15,7 @@ Handkey is experimental. Report a vulnerability using GitHub's private vulnerabi
 
 The broker, its dedicated `op`, the host administrator, approval client code, and the caller-side helper are trusted. A compromised approval client can copy its device key. A compromised broker or administrator can copy the vault-wide service token during approval. Agent claims and request purposes are not independently verified. Tailscale-derived node identities and local process ancestry are not implemented; current source metadata is the listener's peer address only.
 
-The agent API has no login: Unix socket permissions or a private network with explicit ACLs restrict access. All remote traffic must use HTTPS. A TLS-terminating proxy is trusted with plaintext. A receiver token prevents accidental cross-request collection, not compromise of the requesting user's filesystem.
+The agent API has no login: Unix socket permissions restrict access. The TCP listener serves only the approval API unless the broker runs with `--remote-agents`; then a private network with explicit ACLs must restrict it. A broker without a TCP listener serves the approval API on the socket, including first-device bootstrap when enabled. All remote traffic must use HTTPS. A TLS-terminating proxy is trusted with plaintext. A receiver token prevents accidental cross-request collection, not compromise of the requesting user's filesystem.
 
 ## Deliberate limits
 

@@ -46,7 +46,7 @@ func cliFixture(t *testing.T) (*broker.Broker, string, broker.Credentials, []byt
 	if e != nil {
 		t.Fatal(e)
 	}
-	s := httptest.NewServer(b.Handler(broker.HTTPOptions{}))
+	s := httptest.NewServer(b.Handler(broker.HTTPOptions{Surfaces: broker.AgentSurface}))
 	t.Cleanup(s.Close)
 	return b, s.URL, c, key
 }

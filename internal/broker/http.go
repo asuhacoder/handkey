@@ -12,7 +12,15 @@ import (
 	"github.com/asuhacoder/handkey/internal/cryptobox"
 )
 
+type Surface uint8
+
+const (
+	AgentSurface Surface = 1 << iota
+	ApproverSurface
+)
+
 type HTTPOptions struct {
+	Surfaces       Surface
 	Bootstrap      bool
 	AllowedOrigins []string
 }
@@ -27,23 +35,27 @@ func (b *Broker) Handler(options HTTPOptions) http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, 200, map[string]any{"status": "ok", "initialized": b.Initialized()})
 	})
-	mux.HandleFunc("POST /v1/bootstrap", a.bootstrap)
-	mux.HandleFunc("POST /v1/devices", a.addDevice)
-	mux.HandleFunc("POST /v1/devices/{id}/revoke", a.revoke)
-	mux.HandleFunc("POST /v1/devices/{id}/renew", a.renew)
-	mux.HandleFunc("POST /v1/token/rotate", a.rotate)
-	mux.HandleFunc("POST /v1/requests", a.submit)
-	mux.HandleFunc("GET /v1/requests", a.requests)
+	if options.Surfaces&ApproverSurface != 0 {
+		mux.HandleFunc("POST /v1/bootstrap", a.bootstrap)
+		mux.HandleFunc("POST /v1/devices", a.addDevice)
+		mux.HandleFunc("POST /v1/devices/{id}/revoke", a.revoke)
+		mux.HandleFunc("POST /v1/devices/{id}/renew", a.renew)
+		mux.HandleFunc("POST /v1/token/rotate", a.rotate)
+		mux.HandleFunc("GET /v1/requests", a.requests)
+		mux.HandleFunc("POST /v1/requests/{id}/approve", a.approve)
+		mux.HandleFunc("POST /v1/requests/{id}/deny", a.deny)
+		mux.HandleFunc("GET /v1/events", a.events)
+	}
+	if options.Surfaces&AgentSurface != 0 {
+		mux.HandleFunc("POST /v1/requests", a.submit)
+		mux.HandleFunc("POST /v1/requests/{id}/cancel", a.cancel)
+		mux.HandleFunc("POST /v1/requests/{id}/consume", a.consume)
+		mux.HandleFunc("POST /v1/requests/{id}/heartbeat", a.heartbeat)
+		mux.HandleFunc("DELETE /v1/requests/{id}/execution", a.endExecution)
+		mux.HandleFunc("/v1/requests/{id}/proxy/{path...}", a.proxy)
+		mux.HandleFunc("GET /v1/items", a.items)
+	}
 	mux.HandleFunc("GET /v1/requests/{id}", a.status)
-	mux.HandleFunc("POST /v1/requests/{id}/approve", a.approve)
-	mux.HandleFunc("POST /v1/requests/{id}/deny", a.deny)
-	mux.HandleFunc("POST /v1/requests/{id}/cancel", a.cancel)
-	mux.HandleFunc("POST /v1/requests/{id}/consume", a.consume)
-	mux.HandleFunc("POST /v1/requests/{id}/heartbeat", a.heartbeat)
-	mux.HandleFunc("DELETE /v1/requests/{id}/execution", a.endExecution)
-	mux.HandleFunc("/v1/requests/{id}/proxy/{path...}", a.proxy)
-	mux.HandleFunc("GET /v1/items", a.items)
-	mux.HandleFunc("GET /v1/events", a.events)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -280,16 +292,23 @@ func (a *api) requests(w http.ResponseWriter, r *http.Request) {
 }
 func (a *api) status(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, e := a.b.View(bearer(r)); e == nil {
-		a.b.mu.Lock()
-		defer a.b.mu.Unlock()
-		req := a.b.st.Requests[id]
-		if req == nil {
-			failure(w, ErrMissing)
+	if a.options.Surfaces&ApproverSurface != 0 {
+		_, e := a.b.View(bearer(r))
+		if e == nil {
+			a.b.mu.Lock()
+			defer a.b.mu.Unlock()
+			req := a.b.st.Requests[id]
+			if req == nil {
+				failure(w, ErrMissing)
+				return
+			}
+			reply(w, 200, cloneRequest(req))
 			return
 		}
-		reply(w, 200, cloneRequest(req))
-		return
+		if a.options.Surfaces&AgentSurface == 0 {
+			failure(w, e)
+			return
+		}
 	}
 	req, e := a.b.Status(id, bearer(r))
 	if e != nil {
