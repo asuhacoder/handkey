@@ -165,6 +165,7 @@ func (c *CLI) Create(ctx context.Context, token []byte, create broker.Create, re
 	if create.GeneratePassword != "" {
 		args = append(args, "--generate-password="+create.GeneratePassword)
 	}
+	args = append(args, "--vault", create.Vault)
 	raw, e := c.run(ctx, token, input, args...)
 	if e != nil {
 		return broker.Item{}, e
